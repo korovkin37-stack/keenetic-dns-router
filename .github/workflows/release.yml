@@ -26,10 +26,31 @@ jobs:
       - name: Pack
         run: tar czf dns-router.tar.gz app.php ext.php index.html app.js style.css lang.ru.json
 
+      - name: Release notes from the changelogs
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          section() { awk -v v="## $ver" '$0 == v {f=1; next} /^## / {if (f) exit} f' "$1"; }
+          en=$(section CHANGELOG.md)
+          [ -n "$en" ] || { echo "CHANGELOG.md has no section ## $ver"; exit 1; }
+          ru=$(section CHANGELOG.ru.md)
+          {
+            echo "## What's new"
+            echo "$en"
+            if [ -n "$ru" ]; then
+              echo
+              echo "## Что нового"
+              echo "$ru"
+            fi
+            echo
+            echo "Install or update: see [README](https://github.com/${GITHUB_REPOSITORY}#install)."
+          } > notes.md
+          cat notes.md
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dns-router.tar.gz
             install.sh
+          body_path: notes.md
           generate_release_notes: true

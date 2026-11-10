@@ -1,5 +1,5 @@
 <?php
-const APP_VERSION = '5.38.0';
+const APP_VERSION = '5.38.1';
 const COOKIE_NAME = 'krdns_auth';
 const COOKIE_TTL = 604800;
 

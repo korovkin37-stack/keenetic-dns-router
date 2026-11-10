@@ -1417,7 +1417,9 @@ const GITHUB_REPO = 'korovkin37-stack/keenetic-dns-router';
 function doCheckGithubUpdate($in) {
     $cacheFile = sys_get_temp_dir() . '/dns-router-github.json';
     $cache = json_decode((string)@file_get_contents($cacheFile), true);
-    if ($cache && empty($in['force']) && $cache['checked'] > time() - 6 * 3600 && $cache['current'] === APP_VERSION) return $cache;
+    // the notes come from CHANGELOG.<lang>.md when the release has one, otherwise from the English CHANGELOG.md
+    $lang = preg_match('/^[a-z]{2,3}$/', (string)($in['lang'] ?? '')) ? (string)$in['lang'] : 'en';
+    if ($cache && empty($in['force']) && $cache['checked'] > time() - 6 * 3600 && $cache['current'] === APP_VERSION && $cache['lang'] === $lang) return $cache;
 
     $tmp = tempnam(sys_get_temp_dir(), 'krgh_');
     $error = listsDownload('https://api.github.com/repos/' . GITHUB_REPO . '/releases/latest', $tmp);
@@ -1437,7 +1439,9 @@ function doCheckGithubUpdate($in) {
     $newer = version_compare($latest, APP_VERSION, '>');
     if ($newer) {
         $tmp = tempnam(sys_get_temp_dir(), 'krgh_');
-        if (listsDownload('https://raw.githubusercontent.com/' . GITHUB_REPO . '/' . rawurlencode($tag) . '/CHANGELOG.md', $tmp) === '') {
+        $raw = 'https://raw.githubusercontent.com/' . GITHUB_REPO . '/' . rawurlencode($tag) . '/';
+        $found = $lang !== 'en' && listsDownload($raw . 'CHANGELOG.' . $lang . '.md', $tmp) === '';
+        if ($found || listsDownload($raw . 'CHANGELOG.md', $tmp) === '') {
             $parts = preg_split('/^## +(.+)$/m', (string)file_get_contents($tmp), -1, PREG_SPLIT_DELIM_CAPTURE);
             for ($i = 1; $i + 1 < count($parts) && count($notes) < 10; $i += 2) {
                 // "5.36" or "5.31–5.33": the first version in the heading decides
@@ -1451,7 +1455,7 @@ function doCheckGithubUpdate($in) {
 
     $result = ['success' => true, 'current' => APP_VERSION, 'latest' => $latest, 'tag' => $tag, 'newer' => $newer,
         'published' => (string)($release['published_at'] ?? ''), 'url' => (string)($release['html_url'] ?? ''), 'asset' => $asset,
-        'notes' => $notes, 'checked' => time()];
+        'notes' => $notes, 'lang' => $lang, 'checked' => time()];
     file_put_contents($cacheFile, json_encode($result));
     @chmod($cacheFile, 0666);
     return $result;
@@ -1459,7 +1463,7 @@ function doCheckGithubUpdate($in) {
 
 // Downloads the archive of the newest release and checks it the same way as an uploaded one
 function doGithubDownloadUpdate() {
-    $check = doCheckGithubUpdate([]);
+    $check = doCheckGithubUpdate(['lang' => 'en']);
     if (!$check['success']) return $check;
     if ($check['asset'] === '') return ['success' => false, 'error' => 'The release has no dns-router.tar.gz'];
     $tmp = tempnam(sys_get_temp_dir(), 'krgh_');

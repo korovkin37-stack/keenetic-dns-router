@@ -24,7 +24,9 @@ function i18nEscape(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function i18nSetDict(strings) {
     I18N.dict = new Map();
     I18N.patterns = [];
-    for (const [k, v] of Object.entries(strings || {})) {
+    for (const [key, v] of Object.entries(strings || {})) {
+        // lookups normalize whitespace, so a key written with line breaks (a multi-line tooltip) is stored the same way
+        const k = i18nNorm(key);
         if (!v || k === v) continue;
         if (/\{\d+\}/.test(k)) {
             const idx = [];
@@ -75,6 +77,11 @@ function i18nTr(str) {
 }
 
 // For code that needs a string right away (confirm, prompt) and for formatting: t('Hello {0}', name)
+// A note from the server made of several lines: each line is its own key
+function tLines(text) {
+    return String(text || '').split('\n').map(line => t(line)).join('\n');
+}
+
 function t(str, ...args) {
     return i18nTr(str).replace(/\{(\d+)\}/g, (x, n) => (args[+n] === undefined ? x : args[+n]));
 }
@@ -1358,7 +1365,7 @@ async function testRouteCurlOne(target, ip, dev) {
     try {
         const c = await api(payload);
         box.innerHTML = renderTestRouteCurl(c);
-        if (pill) pill.innerHTML = c.error ? '<span class="dpi-r rst">ERR</span>' : `<span class="dpi-r ${c.result.class}" data-tip="${escapeHtml(t(c.result.note || ''))}">${escapeHtml(t(c.result.code))}</span>`;
+        if (pill) pill.innerHTML = c.error ? '<span class="dpi-r rst">ERR</span>' : `<span class="dpi-r ${c.result.class}" data-tip="${escapeHtml(tLines(c.result.note))}">${escapeHtml(t(c.result.code))}</span>`;
     } catch (e) {
         box.innerHTML = `<div class="muted">${escapeHtml(e.message)}</div>`;
         if (pill) pill.innerHTML = '<span class="dpi-r rst">ERR</span>';
@@ -1376,11 +1383,11 @@ function renderTestRouteCurl(c) {
         t('first byte {0}', ms(c.times.first_byte)),
         t('total {0}', ms(c.times.total)),
     ].filter(Boolean);
-    let html = `<div class="tr-curl-head"><span class="dpi-r ${c.result.class}" data-tip="${escapeHtml(t(c.result.note || ''))}">${escapeHtml(t(c.result.code))}</span>`
+    let html = `<div class="tr-curl-head"><span class="dpi-r ${c.result.class}" data-tip="${escapeHtml(tLines(c.result.note))}">${escapeHtml(t(c.result.code))}</span>`
         + `<span class="cell-mono">${escapeHtml(c.url)}</span></div>`;
     html += `<div class="tr-curl-line">${escapeHtml(c.ip)} · ${escapeHtml(c.dev || t('main route'))} · ${escapeHtml(c.sni ? t('SNI: {0}', c.sni) : t('without SNI'))}</div>`;
     html += `<div class="tr-curl-line">${facts.map(escapeHtml).join(' · ')}</div>`;
-    if (c.result.class !== 'ok') html += `<div class="tr-curl-line muted">${escapeHtml(t(c.result.note || ''))}</div>`;
+    if (c.result.class !== 'ok') html += `<div class="tr-curl-line muted">${escapeHtml(tLines(c.result.note))}</div>`;
     if (c.redirect) html += `<div class="tr-curl-line">${escapeHtml(t('Redirect: {0}', c.redirect))}</div>`;
     if (c.cert) {
         const names = c.cert.names.length ? c.cert.names.slice(0, 6).join(', ') + (c.cert.names.length > 6 ? ' +' + (c.cert.names.length - 6) : '') : '';
@@ -2252,7 +2259,7 @@ async function checkGithubUpdate(force) {
     if (force) status.textContent = t('Asking GitHub…');
     let r;
     try {
-        r = await (await apiFetch(API + '?action=checkGithubUpdate' + (force ? '&force=1' : ''))).json();
+        r = await (await apiFetch(API + '?action=checkGithubUpdate&lang=' + encodeURIComponent(I18N.lang) + (force ? '&force=1' : ''))).json();
     } catch (error) {
         r = { success: false, error: error.message };
     }
@@ -6135,7 +6142,7 @@ function dpiIfaceLabel(run, key) {
 
 function dpiCell(c, pending = false) {
     if (!c) return pending ? '<span class="dpi-r pend">…</span>' : '<span class="dpi-r na">—</span>';
-    return `<span class="dpi-r ${c.class}" data-tip="${escapeHtml(t(c.note || ''))}">${escapeHtml(t(c.code))}</span>`;
+    return `<span class="dpi-r ${c.class}" data-tip="${escapeHtml(tLines(c.note))}">${escapeHtml(t(c.code))}</span>`;
 }
 
 function dpiVerdict(level, text) {
@@ -6270,7 +6277,7 @@ function dpiKbBar(res) {
     if (!res) return dpiRunning ? '<span class="dpi-r pend">…</span>' : '<span class="dpi-r na">—</span>';
     const width = Math.min(100, res.kb / 40 * 100);
     const cls = res.verdict === 'ok' ? 'ok' : 'cut';
-    const note = t(res.note) + (res.timeout ? '\n' + t('Read timeout: {0} s', res.timeout) : '');
+    const note = tLines(res.note) + (res.timeout ? '\n' + t('Read timeout: {0} s', res.timeout) : '');
     return `<div class="dpi-kb" data-tip="${escapeHtml(note)}"><span class="dpi-track"><span class="dpi-zone"></span><span class="dpi-fill ${cls}" style="width:${width}%"></span></span><b>${res.verdict === 'down' ? '—' : res.kb + ' ' + t('KB')}</b></div>`;
 }
 

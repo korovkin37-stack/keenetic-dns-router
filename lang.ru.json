@@ -1469,6 +1469,18 @@
 "release page": "страница релиза",
 "Downloading from GitHub…": "Скачиваю с GitHub…",
 "GitHub gave no release": "GitHub не вернул релиз",
-"The release has no dns-router.tar.gz": "В релизе нет dns-router.tar.gz"
+"The release has no dns-router.tar.gz": "В релизе нет dns-router.tar.gz",
+"Filter": "Фильтр",
+"Help": "Справка",
+"Path": "Путь",
+"Protocol": "Протокол",
+"Sections": "Разделы",
+"Policy:": "Политика:",
+"The server asked to retry with a token (Retry)": "Сервер попросил повтор с токеном (Retry)",
+"The update process was killed": "Процесс обновления был убит",
+"$bird_config_file is not set in config.php": "В config.php не задан $bird_config_file",
+"$bird_init_script is not set in config.php": "В config.php не задан $bird_init_script",
+"opkg could not install curl: {0}": "opkg не смог установить curl: {0}",
+"Hello {0}": "Привет, {0}"
 }
 }
