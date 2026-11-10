@@ -1,0 +1,7 @@
+config.php
+*.db
+*.db-journal
+dpi/
+*.bak
+dns-router.tar.gz
+.DS_Store

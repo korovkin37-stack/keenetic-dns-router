@@ -1,0 +1,1259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keenetic DNS Router</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+    <script>try{var th=localStorage.getItem("theme");if(th)document.documentElement.dataset.theme=th}catch(e){}</script>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div id="netBar" aria-hidden="true"></div>
+    <div id="authView" class="login-body" style="display:none">
+    <select class="lang-select lang-select-auth" aria-label="Language" hidden></select>
+    <form id="loginForm" class="login-card" style="display:none" autocomplete="off">
+        <h1>Keenetic DNS Router</h1>
+        <div id="loginError" class="login-error" style="display:none"></div>
+        <div class="form-group">
+            <label for="loginUser">Username</label>
+            <input type="text" id="loginUser" required autofocus autocapitalize="off" spellcheck="false">
+        </div>
+        <div class="form-group">
+            <label for="loginPass">Password</label>
+            <input type="password" id="loginPass" required>
+        </div>
+        <button type="submit" class="btn btn-primary login-submit">Sign in</button>
+    </form>
+
+    <div id="setupCard" class="login-card setup-wizard-card" style="display:none">
+        <h1>First-time setup</h1>
+        <p class="setup-error-text" id="setupStepLabel"></p>
+        <div id="setupChecks" class="checks-list"></div>
+
+        <form id="setupConfigForm" class="setup-step" style="display:none" autocomplete="off">
+            <div class="setup-step-title">Router access and panel login</div>
+            <div class="form-group">
+                <label for="setupPasswd">Router admin password</label>
+                <input type="password" id="setupPasswd" required autocomplete="off">
+                <div class="setup-field-hint">The admin password of the Keenetic web UI. Used for su to run ip rule/route; stored in config.php.</div>
+            </div>
+            <div class="form-group">
+                <label for="setupRci">RCI address</label>
+                <input type="text" id="setupRci" value="http://127.0.0.1:79" required spellcheck="false">
+                <div class="setup-field-hint">Local Keenetic RCI. The port depends on the firmware.</div>
+            </div>
+            <div class="form-group">
+                <label for="setupTableStart">First routing table number</label>
+                <input type="number" id="setupTableStart" value="400" min="100" max="60000" required>
+                <div class="setup-field-hint">Must not overlap tables used by Keenetic or other packages.</div>
+            </div>
+            <div class="form-group">
+                <label for="setupUser">Panel login</label>
+                <input type="text" id="setupUser" value="admin" required autocapitalize="off" spellcheck="false">
+            </div>
+            <div class="form-group">
+                <label for="setupPassword">Panel password</label>
+                <input type="password" id="setupPassword" required autocomplete="new-password">
+            </div>
+            <button type="submit" class="btn btn-primary login-submit" id="setupConfigBtn">Save and continue</button>
+            <div id="setupConfigResult" class="table-view-status"></div>
+        </form>
+
+        <div id="setupDbBlock" class="setup-step" style="display:none">
+            <div class="setup-step-title">Database</div>
+            <p class="setup-error-text">Creates the SQLite database, imports policies from Keenetic and installs the ndm hooks.</p>
+            <button type="button" class="btn btn-primary login-submit" id="setupDbBtn">Create database</button>
+            <div id="setupDbResult" class="table-view-status"></div>
+        </div>
+    </div>
+</div>
+
+    <div class="container shell" style="display:none">
+        <aside class="sidebar">
+            <div class="brand">
+                <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h10a4 4 0 0 1 0 8H8"></path><path d="M7 5L4 8l3 3"></path></svg></span>
+                <div class="brand-text">
+                    <h1>Keenetic DNS Router</h1>
+                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.37.0</button>
+                </div>
+            </div>
+            <nav class="tabs" id="mainNav" aria-label="Sections">
+                <div class="tabs-buttons">
+                    <button class="tab-btn active" data-tab="domains" style="order:1"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4"></circle></svg><span class="tab-label">Targets</span><span class="tab-count" id="cntDomains"></span></button>
+                    <button class="tab-btn" data-tab="policies" style="order:2"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"></path></svg><span class="tab-label">Policies</span><span class="tab-count" id="cntPolicies"></span></button>
+                    <button class="tab-btn" data-tab="lists" style="order:3"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M4 12h16M4 18h10"></path><circle cx="18" cy="6" r="2"></circle><circle cx="18" cy="18" r="2"></circle></svg><span class="tab-label">Lists</span><span class="tab-count" id="cntLists"></span></button>
+                    <button class="tab-btn" data-tab="clients" style="order:4"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg><span class="tab-label">Clients</span><span class="tab-count" id="cntClients"></span></button>
+                    <button class="tab-btn" data-tab="tools" style="order:6"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M19 7h1M4 17h1M11 17h9"></path><circle cx="16" cy="7" r="2.5"></circle><circle cx="8" cy="17" r="2.5"></circle></svg><span class="tab-label">Tools</span></button>
+                    <button type="button" class="nav-more-btn" id="navMoreBtn" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path></svg><span class="tab-label">More</span></button>
+                    <div class="nav-more-menu">
+                    <button class="tab-btn" data-tab="tables" style="order:3"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg><span class="tab-label">Routing tables</span></button>
+                    <button class="tab-btn" data-tab="interfaces" style="order:5"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="2.5"></circle><circle cx="18" cy="6" r="2.5"></circle><circle cx="18" cy="18" r="2.5"></circle><path d="M8.3 11l7.4-4M8.3 13l7.4 4"></path></svg><span class="tab-label">Interfaces</span></button>
+                    <button class="tab-btn" data-tab="diag" style="order:6"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"></path></svg><span class="tab-label">Diagnostics</span></button>
+                    <button class="tab-btn" data-tab="update" style="order:7"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5"></circle><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"></path></svg><span class="tab-label">Settings</span></button>
+                    </div>
+                </div>
+            </nav>
+            <div class="dashboard-strip" id="dashboardStrip">
+                <div class="dash-head"><span class="led led-grey" id="dashLed"></span><span id="dashRouter">Loading…</span><button class="icon-btn" id="dashboardRefreshBtn" title="Refresh">↻</button></div>
+                <span class="dash-chip"><span class="dash-chip-label">Uptime</span><span class="dash-chip-value" id="dashUptime">—</span></span>
+                <span class="dash-chip"><span class="dash-chip-label">Interfaces</span><span class="dash-chip-value" id="dashInterfaces">—</span></span>
+                <span class="dash-chip" id="dashBirdChip" hidden><span class="dash-chip-label">bird</span><span class="dash-chip-value" id="dashBird" data-notr>—</span></span>
+            </div>
+        </aside>
+
+        <div class="main-col">
+        <header class="topbar">
+            <h2 class="page-title" id="pageTitle">Targets</h2>
+            <div class="header-actions" id="headerActions">
+                <button class="btn btn-accent" id="refreshAll" title="Resolve the targets, update all lists from the source and apply the routes">Refresh everything</button>
+                <button class="btn" id="applyRoutes" title="Write the routes into the tables from what is stored: no DNS lookups, no downloads">Apply routes</button>
+                <button class="btn" id="jobLogBtn" title="Running, waiting and finished tasks with their logs">Tasks</button>
+                <button class="btn btn-icon" id="headerHelpBtn" title="What do these buttons do?" aria-label="Help">?</button>
+                <a href="#" id="logoutBtn" class="logout-link" title="Sign out">
+                    <svg class="logout-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                        <polyline points="16 17 21 12 16 7"></polyline>
+                        <line x1="21" y1="12" x2="9" y2="12"></line>
+                    </svg>
+                    Log out
+                </a>
+            </div>
+            <button class="header-burger" id="headerBurgerBtn" aria-label="Menu" aria-expanded="false">☰</button>
+        </header>
+
+        <div id="domainsTab" class="tab-content active">
+            <div class="status-strip" id="statusStrip"></div>
+            <div class="toolbar">
+                <input type="text" id="searchDomains" placeholder="Search domains, IPs, CIDR...">
+                <div class="toolbar-left">
+                    <div class="toolbar-actions">
+                        <button class="btn" id="checkApply" title="Resolve the domains of all targets again, then apply the routes">Update &amp; apply</button>
+                        <button class="btn btn-primary" id="addDomainBtn">+ Add target</button>
+                        <button class="btn btn-small" id="exportBtn" title="Download all targets as a JSON file">Export</button>
+                        <button class="btn btn-small" id="importBtn" title="Load targets from a previously exported JSON file">Import</button>
+                        <input type="file" id="importFile" accept="application/json,.json" style="display:none">
+                    </div>
+                </div>
+            </div>
+            <div class="table-scroll">
+            <table id="domainsTable">
+                <thead>
+                    <tr>
+                        <th class="th-sort" data-sort="target" tabindex="0">Target</th>
+                        <th class="th-sort" data-sort="interface" tabindex="0">Interface</th>
+                        <th class="th-sort" data-sort="gateway" tabindex="0">Gateway</th>
+                        <th class="th-sort" data-sort="current_ip" tabindex="0">Current IP</th>
+                        <th class="th-sort" data-sort="last_check" tabindex="0">Last check</th>
+                        <th class="th-sort" data-sort="status" tabindex="0">Status</th>
+                        <th class="col-actions">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="domainsList">
+                    <tr><td colspan="8" class="loading">Loading…</td></tr>
+                </tbody>
+            </table>
+            </div>
+        </div>
+
+        <div id="policiesTab" class="tab-content">
+            <div class="toolbar">
+                <input type="text" id="searchPolicies" placeholder="Search policies...">
+                <div class="toolbar-left">
+                    <div class="toolbar-actions">
+                        <button class="btn" id="refreshPolicies" title="Read the policies from Keenetic: names, marks, tables">Sync policies</button>
+                    </div>
+                </div>
+            </div>
+            <div class="table-scroll">
+            <table id="policiesTable">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Mark</th>
+                        <th>Our table</th>
+                        <th>Keenetic table</th>
+                        <th>Lists table</th>
+                        <th>Targets</th>
+                        <th>Lists</th>
+                        <th>Traffic</th>
+                        <th>Gateway</th>
+                        <th>Updated</th>
+                        <th class="col-actions">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="policiesList">
+                    <tr><td colspan="10" class="loading">Loading…</td></tr>
+                </tbody>
+            </table>
+            </div>
+        </div>
+
+        <div id="listsTab" class="tab-content">
+            <div class="status-strip" id="listsStrip"></div>
+            <details class="list-help">
+                <summary>How lists work</summary>
+                <p>A list is a ready-made set of IP networks of a service (for example youtube.com) published by the source. Three modes: networks and addresses are taken from the source as they are; the source's domains are resolved through your DNS; or both at once, merged. The result becomes routes in the policy's list table (500, 501...) towards the exit you chose.</p>
+                <p>"Update all" downloads fresh data for every list from the source, compares it with the stored one and applies the routes. It is the only thing that contacts the source. A list that lost more than half of its entries is held back until you confirm it in the list details.</p>
+                <p>Targets are checked before lists (see Routing order in Settings): where both cover the same address, the one with the lower pref wins.</p>
+            </details>
+            <div class="toolbar">
+                <input type="text" id="searchLists" placeholder="Search lists...">
+                <div class="toolbar-left">
+                    <div class="toolbar-actions">
+                        <button class="btn" id="syncListsBtn" title="Download fresh data from the source for all lists, then apply the routes">↻ Update all</button>
+                        <button class="btn" id="sourcesBtn" title="Where the lists are downloaded from">Sources</button>
+                        <button class="btn btn-primary" id="addListBtn">+ Add lists</button>
+                    </div>
+                </div>
+            </div>
+            <div class="list-warn" id="listsNoCurl" hidden>
+                <span>curl is not installed: the lists cannot be downloaded.</span>
+                <button type="button" class="btn btn-small btn-primary" id="installCurlBtn">Install curl</button>
+            </div>
+            <div class="table-scroll">
+            <table id="listsTable">
+                <thead>
+                    <tr>
+                        <th>List</th>
+                        <th>Interface</th>
+                        <th>Gateway</th>
+                        <th>Domains in source <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="How many domain names the source knows for this service. For information only: nothing is resolved on the router.">i</span></th>
+                        <th>Networks <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="IP networks (CIDR) of the list: each one becomes a route in the table of the policy.">i</span></th>
+                        <th>Updated</th>
+                        <th>Status</th>
+                        <th class="col-actions">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="listsList">
+                    <tr><td colspan="7" class="loading">Loading…</td></tr>
+                </tbody>
+            </table>
+            </div>
+            <p class="card-note" id="listsNote"></p>
+        </div>
+
+        <div id="tablesTab" class="tab-content">
+            <div class="toolbar">
+                <div class="toolbar-actions">
+                    <button class="btn btn-small" id="refreshTablesBtn" title="Re-read live routing tables from the kernel">↻ Refresh</button>
+                </div>
+                <div class="tables-hint">Live kernel state - not stored, re-read every time this tab opens</div>
+            </div>
+            <div class="sum-grid" id="tablesSummary">
+                <div class="sum-card"><span class="sum-k">Tables</span><span class="sum-v" id="sumTables">—</span></div>
+                <div class="sum-card"><span class="sum-k">Routes in total</span><span class="sum-v" id="sumRoutes">—</span></div>
+                <div class="sum-card"><span class="sum-k">ip rule entries</span><span class="sum-v" id="sumRules">—</span></div>
+            </div>
+            <div class="table-scroll">
+            <table id="tablesTable">
+                <thead>
+                    <tr>
+                        <th>Table</th>
+                        <th>Managed by</th>
+                        <th>Rule</th>
+                        <th class="col-actions">Routes</th>
+                    </tr>
+                </thead>
+                <tbody id="tablesList">
+                    <tr><td colspan="4" class="loading">Loading…</td></tr>
+                </tbody>
+            </table>
+            </div>
+            <div class="static-block">
+                <div class="tools-heading-row"><h3>Static routes of the router</h3></div>
+                <div class="toolbar">
+                    <div class="toolbar-actions">
+                        <button class="btn btn-small btn-primary" id="staticAddBtn">+ Add routes</button>
+                        <button class="btn btn-small" id="staticRefreshBtn">↻ Refresh</button>
+                        <label class="check-row static-dry"><input type="checkbox" id="rciDryRun"> <span>Preview only: show the request, send nothing</span></label>
+                    </div>
+                    <div class="tables-hint">The routes of the Keenetic web interface (Network rules, Routing). They are kept in the router configuration and saved to flash.</div>
+                </div>
+                <div class="table-scroll">
+                <table id="staticTable">
+                    <thead>
+                        <tr>
+                            <th>Network</th>
+                            <th>Gateway</th>
+                            <th>Interface</th>
+                            <th>Comment</th>
+                            <th>Status</th>
+                            <th class="col-actions">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="staticList">
+                        <tr><td colspan="6" class="loading">Loading…</td></tr>
+                    </tbody>
+                </table>
+                </div>
+            </div>
+            <div class="info-note">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5M12 16.5v.5"></path></svg>
+                <span id="prefNote"></span>
+            </div>
+        </div>
+
+        <div id="clientsTab" class="tab-content">
+
+            <div class="toolbar">
+                <input type="text" id="searchClients" placeholder="Search name, MAC, IP...">
+                <div class="seg" id="clientsFilter" role="group" aria-label="Filter">
+                    <button type="button" data-f="all" class="active">All <span class="seg-n" id="cfAll"></span></button>
+                    <button type="button" data-f="online">Online <span class="seg-n" id="cfOnline"></span></button>
+                    <button type="button" data-f="wifi">Wi-Fi <span class="seg-n" id="cfWifi"></span></button>
+                    <button type="button" data-f="wired">Wired <span class="seg-n" id="cfWired"></span></button>
+                    <button type="button" data-f="unreg">Unregistered <span class="seg-n" id="cfUnreg"></span></button>
+                </div>
+                <select id="clientsPolicy" aria-label="Policy"></select>
+                <button class="btn btn-small" id="refreshClientsBtn">↻ Refresh</button>
+                <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Registered devices from Keenetic (/rci/show/ip/hotspot), with a live snapshot of each client's current connections (from /proc/net/nf_conntrack). This is NOT a history log, only what's active right now.">i</span>
+            </div>
+
+            <div class="table-scroll">
+            <table id="clientsTable">
+                <thead>
+                    <tr>
+                        <th><span class="th-sort" data-sort="status" tabindex="0">Status</span></th>
+                        <th><span class="th-sort" data-sort="name" tabindex="0">Name</span></th>
+                        <th><span class="th-sort" data-sort="ip" tabindex="0">IP</span></th>
+                        <th><span class="th-sort" data-sort="mac" tabindex="0">MAC</span></th>
+                        <th><span class="th-sort" data-sort="policy" tabindex="0">Policy</span></th>
+                        <th><span class="th-sort" data-sort="uptime" tabindex="0">Uptime</span></th>
+                        <th><span class="th-sort" data-sort="rx" tabindex="0">Down</span> / <span class="th-sort" data-sort="tx" tabindex="0">Up</span></th>
+                        <th><span class="th-sort" data-sort="connection" tabindex="0">Connection</span></th>
+                        <th class="col-actions">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="clientsList">
+                    <tr><td colspan="9" class="loading">Loading…</td></tr>
+                </tbody>
+            </table>
+            </div>
+        </div>
+
+        <div id="interfacesTab" class="tab-content">
+            <div class="toolbar">
+                <input type="text" id="searchInterfaces" placeholder="Search name, type, description...">
+                <div class="seg" id="interfacesFilter" role="group" aria-label="Filter">
+                    <button type="button" data-f="active">Active <span class="seg-n" id="ifActive"></span></button>
+                    <button type="button" data-f="all">All <span class="seg-n" id="ifAll"></span></button>
+                </div>
+                <button class="btn btn-small" id="refreshInterfacesBtn">↻ Refresh</button>
+            </div>
+            <div class="tab-sub" id="interfacesSummary"></div>
+            <div class="if-grid" id="interfacesList"><div class="loading">Loading…</div></div>
+        </div>
+
+        <div id="updateTab" class="tab-content">
+            <div class="tools-section look-card">
+                <div class="look-row">
+                    <span class="look-label">Language <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Interface language, remembered in this browser. More languages can be added with a lang.xx.json file: put it into an archive and upload it below.">i</span></span>
+                    <select class="lang-select" aria-label="Language" hidden></select>
+                </div>
+                <div class="look-row">
+                    <span class="look-label">Theme <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Colour scheme of the panel, remembered in this browser.">i</span></span>
+                    <div class="theme-pick" id="themePick" role="group">
+                        <button type="button" data-theme="graphite"><i></i><span>Graphite</span></button>
+                        <button type="button" data-theme="light"><i></i><span>Light</span></button>
+                        <button type="button" data-theme="amber"><i></i><span>Amber</span></button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tools-section pref-card">
+                <div class="card-head">
+                    <h3>Routing order <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Marked traffic is looked up in the tables by rule pref, lowest first; if a table has no matching route, the next rule is tried. Targets and lists each have their own table per policy (400 and 500, 401 and 501...). Drag the cards, use the arrows, or type a pref.">i</span></h3>
+                    <div class="card-actions">
+                        <span class="dns-dirty" id="prefDirty" hidden>Not saved</span>
+                        <button class="btn btn-primary btn-small" id="savePrefsBtn" disabled>Save</button>
+                    </div>
+                </div>
+                <div class="pref-lane" id="prefLane"></div>
+            </div>
+
+            <div class="tools-section dns-card">
+                <div class="card-head">
+                    <h3>DNS for domain lookups <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Domains of your targets are resolved with nslookup through these servers instead of the router's DNS. Nothing picked: the system resolver.">i</span></h3>
+                    <div class="card-actions">
+                        <span class="dns-dirty" id="dnsDirty" hidden>Not saved</span>
+                        <button class="btn btn-primary btn-small" id="saveDnsBtn" disabled>Save</button>
+                    </div>
+                </div>
+                <div class="dns-line">
+                    <div class="dns-picked" id="dnsPicked"></div>
+                    <div class="dns-add">
+                        <button class="btn btn-small" id="dnsAddBtn" aria-expanded="false">+ Add ▾</button>
+                        <div class="dns-menu" id="dnsMenu" hidden>
+                            <div class="dns-presets" id="dnsPresets"></div>
+                            <div class="dns-row">
+                                <input type="text" id="dnsServers" placeholder="Own server, IPv4" autocomplete="off" spellcheck="false">
+                                <button class="btn btn-small" id="addDnsBtn">Add</button>
+                            </div>
+                        </div>
+                    </div>
+                    <span class="dns-sep"></span>
+                    <div class="seg" id="dnsMode" role="group">
+                        <button type="button" data-m="first" class="active">First answer wins</button>
+                        <button type="button" data-m="all">Merge all answers</button>
+                    </div>
+                    <span class="info-tip" id="dnsModeTip" tabindex="0" role="img" aria-label="Info" data-tip="">i</span>
+                </div>
+                <div class="dns-row dns-check">
+                    <input type="text" id="dnsTestHost" placeholder="Check resolving: a domain (empty: your first target)" autocomplete="off" spellcheck="false">
+                    <button class="btn btn-small" id="testDnsBtn">Check</button>
+                    <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Resolves a domain through every server in use and shows who answers and how fast. Works with the list above even before saving.">i</span>
+                </div>
+                <div class="dns-results" id="dnsResult"></div>
+                <p class="card-note" id="dnsNoNslookup" hidden>nslookup not found: the system resolver is used.</p>
+            </div>
+
+            <div class="tools-section panel-card">
+                <div class="card-head"><h3>Panel</h3></div>
+                <div class="set-row">
+                    <span class="look-label">Downloads through the interface <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Lists are downloaded with curl. Here you can pick the interface it goes out through, for example a tunnel. Only the panel's downloads are affected, other traffic of the router is not. Empty: the router's normal routing.">i</span></span>
+                    <span class="set-ctl"><span class="set-saved" id="panelNetSaved">Saved</span><select id="panelNetInterface"></select></span>
+                </div>
+                <div class="set-row">
+                    <span class="look-label">Pause between tasks <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="A pause before the next task when several of them wait in the queue: the router gets a rest between the DNS lookups, downloads and writing of the routes. The first task starts at once.">i</span></span>
+                    <span class="set-ctl"><span class="set-saved" id="jobDelaySaved">Saved</span>
+                        <select id="jobDelay">
+                            <option value="0">No pause</option>
+                            <option value="5">5 seconds</option>
+                            <option value="10">10 seconds</option>
+                            <option value="30">30 seconds</option>
+                            <option value="60">1 minute</option>
+                            <option value="120">2 minutes</option>
+                            <option value="300">5 minutes</option>
+                        </select>
+                    </span>
+                </div>
+                <div class="set-row">
+                    <span class="look-label">Installed version</span>
+                    <span class="set-ctl"><span class="upd-num" id="updCardVer">…</span><button class="btn btn-primary btn-small" id="openUpdateBtn">Update</button></span>
+                </div>
+            </div>
+        </div>
+
+        <div id="diagTab" class="tab-content">
+            <div class="tools-section dpi-card" id="dpiCard">
+                <div class="card-head">
+                    <h3>DPI check <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Finds what the provider blocks: spoofed DNS, TLS reset by SNI, connections frozen after 16-20 KB.
+The check runs from the router itself through the chosen interface. Keenetic policies do not apply to the router's own traffic, so the interface is set here.">i</span></h3>
+                    <span class="dpi-meta" id="dpiMeta"></span>
+                    <button type="button" class="btn btn-small" id="dpiListsBtn">Lists</button>
+                </div>
+                <div class="dpi-setup">
+                    <span class="dpi-label">Check through <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Compare runs every check twice: through the provider and through the tunnel. You see what is blocked and whether the tunnel helps.">i</span></span>
+                    <div class="dpi-line">
+                        <div class="seg" id="dpiMode">
+                            <button type="button" data-v="isp">Provider</button>
+                            <button type="button" data-v="tun">Tunnel</button>
+                            <button type="button" data-v="both">Compare</button>
+                        </div>
+                        <select id="dpiIsp" aria-label="Provider" data-empty="Main route"></select>
+                        <select id="dpiTun" aria-label="Tunnel" data-empty="Choose a tunnel"></select>
+                    </div>
+                    <span class="dpi-label">Checks</span>
+                    <div class="dpi-line" id="dpiTests">
+                        <label class="dpi-tg"><input type="checkbox" value="dns"> DNS <small>~15 s</small></label>
+                        <label class="dpi-tg"><input type="checkbox" value="domains"> Domains HTTP / TLS / QUIC <small>~40 s</small></label>
+                        <label class="dpi-tg"><input type="checkbox" value="tcp"> Cut at 16-20 KB <small>~1 min</small></label>
+                        <label class="dpi-tg"><input type="checkbox" value="sni"> White SNI <small>~3 min</small></label>
+                        <label class="dpi-tg"><input type="checkbox" value="tg"> Telegram <small>~20 s</small></label>
+                    </div>
+                    <span class="dpi-label">Domains <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Base list: sites that are often blocked; edit it with the Lists button.
+My targets: the domains of the panel's targets.
+Custom: one per line, for this run only.">i</span></span>
+                    <div class="dpi-line dpi-source">
+                        <div class="seg" id="dpiSource">
+                            <button type="button" data-v="builtin">Base list</button>
+                            <button type="button" data-v="mine">My targets</button>
+                            <button type="button" data-v="custom">Custom</button>
+                        </div>
+                        <span class="muted" id="dpiSourceCount"></span>
+                        <textarea id="dpiCustom" rows="3" placeholder="example.com" hidden></textarea>
+                    </div>
+                </div>
+                <div class="dpi-run">
+                    <button class="btn btn-primary btn-small" id="dpiStartBtn">Start the check</button>
+                    <button class="btn btn-small btn-danger" id="dpiStopBtn" hidden>■ Stop</button>
+                    <div class="dpi-bar" id="dpiBar" hidden><i id="dpiBarFill"></i></div>
+                    <span class="dpi-stage" id="dpiStage"></span>
+                </div>
+                <div id="dpiResults"></div>
+            </div>
+
+            <div class="tools-section tools-row">
+                <h3>Test Route <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Simulate where traffic to an IP, CIDR or domain would actually go, optionally under a specific policy's mark.">i</span></h3>
+                <button class="btn btn-primary btn-small" id="testRouteBtn">Open Test Route</button>
+            </div>
+        </div>
+
+        <div id="toolsTab" class="tab-content">
+            <div class="tools-section bgp-card">
+                <div class="bgp-head">
+                    <span class="led led-grey" id="birdLed"></span>
+                    <h3>BGP (bird4)</h3>
+                    <span class="bgp-state" id="birdStateText">Loading…</span>
+                    <div class="bgp-actions">
+                        <button class="btn btn-small btn-icon" id="refreshBirdBtn" title="Refresh" aria-label="Refresh">↻</button>
+                        <button class="btn btn-small" id="birdLogBtn">bird log</button>
+                        <div class="dns-add">
+                            <button class="btn btn-small" id="birdConfBtn" aria-expanded="false">bird4.conf ▾</button>
+                            <div class="dns-menu pop-menu" id="birdConfMenu" hidden>
+                                <button type="button" class="task-menu-item" id="editBirdConfigBtn"><strong>Edit bird4.conf</strong></button>
+                                <button type="button" class="task-menu-item" id="birdWizardBtn"><strong>bird4.conf wizard</strong></button>
+                            </div>
+                        </div>
+                        <button class="btn btn-small btn-warn-outline" id="restartBirdBtn" title="Full stop+start via the init script - drops and re-establishes BGP sessions">Restart bird</button>
+                    </div>
+                </div>
+                <div id="birdStats" class="bgp-meta" hidden></div>
+                <div id="birdHookMissing" class="muted bgp-pad" hidden></div>
+                <div id="birdHookBox" class="bird-hook" hidden>
+                    <div class="bh-head">
+                        <h4>BGP routing hook</h4>
+                        <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="ndm script 60-dns-router-bird.sh: when the tunnel comes up, bird is started and the BGP rule is added; when it goes down, both are stopped.">i</span>
+                        <span class="bh-state" id="birdHookState"></span>
+                    </div>
+                    <div class="bh-flow">
+                        <div class="bh-step">
+                            <label for="birdTunnel">Tunnel <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="When this tunnel comes up, bird is started, and when it goes down, stopped.">i</span></label>
+                            <select id="birdTunnel"></select>
+                        </div>
+                        <div class="bh-arrow">→</div>
+                        <div class="bh-step">
+                            <label for="birdTable">Table <span class="info-tip" tabindex="0" role="img" aria-label="Info" id="birdTableHint" data-tip="bird puts its routes into this table.">i</span></label>
+                            <input type="number" id="birdTable" min="1" max="65535">
+                        </div>
+                        <div class="bh-arrow">→</div>
+                        <div class="bh-step">
+                            <label for="birdPolicy">Policy <span class="info-tip" tabindex="0" role="img" aria-label="Info" id="birdMarkHint" data-tip="Only devices of this policy use the BGP routes.">i</span></label>
+                            <select id="birdPolicy"></select>
+                        </div>
+                    </div>
+                    <div class="bh-bottom">
+                        <label class="bw-check"><input type="checkbox" id="birdPeerRoute"> <span>Send the BGP session itself through the tunnel</span></label>
+                        <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Host route to the active neighbors from bird4.conf in the main table, kept while the tunnel is up.">i</span>
+                        <span class="bh-aux"><span>Lookup order</span> <span class="info-tip" tabindex="0" role="img" aria-label="Info" id="birdOrder" data-tip="">i</span></span>
+                        <span class="bh-aux"><span>What the hook does</span> <span class="info-tip" tabindex="0" role="img" aria-label="Info" id="birdHookPreview" data-tip="">i</span></span>
+                        <div class="toolbar-actions">
+                            <button class="btn btn-small" id="disableBirdHookBtn">Disable</button>
+                            <button class="btn btn-small btn-primary" id="saveBirdHookBtn">Apply</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tools-section">
+                <div class="card-head">
+                    <h3>ndm hooks <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Scripts that Keenetic runs on events. Each one only queues a task for the task manager, which decides what is due. Switch any of them off, edit the text, or reset it to the generated version. Your edit is kept in the database and is written back whenever the hooks are reinstalled.">i</span></h3>
+                </div>
+                <div id="hooksList" class="hooks-list">Loading…</div>
+            </div>
+
+            <div class="tools-section">
+                <div class="card-head">
+                    <h3>System checks <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="What the panel needs to work. A dashed chip is optional. Hover a chip for the details.">i</span></h3>
+                </div>
+                <div id="depsStatus" class="chk-strip">Loading…</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Target: details, settings and route test in one window -->
+    <div id="targetModal" class="modal">
+        <div class="modal-content target-content">
+            <div class="modal-head">
+                <h2 id="targetTitle">Target</h2>
+                <span class="close" id="targetClose">&times;</span>
+            </div>
+            <div class="modal-tabs" id="targetTabs">
+                <div class="seg" role="tablist">
+                    <button type="button" data-pane="info" class="active">Overview</button>
+                    <button type="button" data-pane="edit">Settings</button>
+                    <button type="button" data-pane="route">Test route</button>
+                </div>
+            </div>
+
+            <div class="modal-body" id="targetBody">
+                <div class="tg-pane" data-pane="info" id="targetInfo"></div>
+
+                <div class="tg-pane" data-pane="edit">
+                    <form id="domainForm">
+                        <input type="hidden" id="domainId">
+                        <div class="form-group">
+                            <label for="domainName">Domain, IP or CIDR:</label>
+                            <textarea id="domainName" required placeholder="example.com or 10.0.0.0/24" rows="3"></textarea>
+                            <div class="setup-field-hint" id="domainNameHint">When adding, one entry per line to add several targets at once - all get the same policy/interface/gateway settings below.</div>
+                        </div>
+                        <div class="form-group">
+                            <label for="domainPolicy">Policy:</label>
+                            <select id="domainPolicy" required></select>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="domainInterface">Interface:</label>
+                                <select id="domainInterface"></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="domainGateway">or gateway:</label>
+                                <input type="text" id="domainGateway" placeholder="192.168.1.1">
+                            </div>
+                        </div>
+                        <label class="check-row"><input type="checkbox" id="domainEnabled" checked> <span>Enabled</span></label>
+                    </form>
+                </div>
+
+                <div class="tg-pane" data-pane="route">
+                    <div class="form-group">
+                        <label for="testRouteIp">Destination (IP, CIDR or domain):</label>
+                        <input type="text" id="testRouteIp" placeholder="8.8.8.8, 10.0.0.0/24 or example.com">
+                    </div>
+                    <div class="form-group">
+                        <label for="testRoutePolicy">Policy (optional - applies its fwmark):</label>
+                        <select id="testRoutePolicy">
+                            <option value="">No policy (plain routing, no mark)</option>
+                        </select>
+                    </div>
+                    <div class="tr-curl">
+                        <label class="check-row"><input type="checkbox" id="trCurlOn"> <span>Also make a real request with curl <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="After the route test, curl sends one request to each found address (up to 3) through the interface the route goes out of, and shows what came back: the HTTP code, TLS, timings, the certificate and the headers.
+SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, no SNI at all.">i</span></span></label>
+                        <div class="tr-curl-fields" id="trCurlFields" hidden>
+                            <select id="trCurlScheme" aria-label="Protocol"><option value="https">HTTPS</option><option value="http">HTTP</option></select>
+                            <input type="text" id="trCurlSni" class="tr-sni" placeholder="SNI: the destination domain" spellcheck="false" aria-label="SNI">
+                            <select id="trCurlWhite" aria-label="White SNI"><option value="">White SNI…</option></select>
+                            <input type="text" id="trCurlPath" class="tr-path" value="/" spellcheck="false" aria-label="Path">
+                            <select id="trCurlTls" aria-label="TLS"><option value="">TLS: auto</option><option value="1.2">TLS 1.2</option><option value="1.3">TLS 1.3</option></select>
+                        </div>
+                    </div>
+                    <div id="testRouteResult" class="test-route-result"></div>
+                </div>
+            </div>
+
+            <div class="modal-foot tg-foot" data-pane="info">
+                <span class="foot-msg" id="targetMsg"></span>
+                <button class="btn btn-primary" id="targetRefreshBtn">Resolve again</button>
+            </div>
+            <div class="modal-foot tg-foot" data-pane="edit">
+                <button type="button" class="btn" id="cancelModal">Cancel</button>
+                <button type="submit" form="domainForm" class="btn btn-primary">Save</button>
+            </div>
+            <div class="modal-foot tg-foot" data-pane="route">
+                <button type="button" class="btn" id="testRouteCancel">Close</button>
+                <button type="button" class="btn btn-primary" id="testRouteRun">Test</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Table Contents Modal (список маршрутов конкретной таблицы, ленивая подгрузка + серверный фильтр) -->
+    <div id="updateModal" class="modal">
+        <div class="modal-content target-content upd-content">
+            <div class="modal-head">
+                <h2>Panel update</h2>
+                <span class="close" id="updateClose">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="upd-grid">
+                    <div class="upd-versions">
+                        <div class="upd-ver">
+                            <span class="upd-label">Installed version</span>
+                            <span class="upd-num" id="updCur">…</span>
+                        </div>
+                        <div class="upd-ver" id="updPrevBox" hidden>
+                            <span class="upd-label">Previous version</span>
+                            <span class="upd-num upd-num-muted" id="updPrev"></span>
+                            <button class="btn btn-small" id="updateRollbackBtn">↶ Roll back</button>
+                        </div>
+                    </div>
+                    <input type="file" id="updateFile" accept=".gz,.tgz,application/gzip" hidden>
+                    <div class="upd-drop" id="updateDrop" tabindex="0" role="button">
+                        <div class="upd-drop-title">Drop the archive here</div>
+                        <div class="upd-drop-sub">dns-router.tar.gz</div>
+                        <button class="btn btn-small btn-primary" id="updatePickBtn" type="button">Choose archive…</button>
+                    </div>
+                </div>
+                <div id="updatePreview" class="update-preview" hidden></div>
+                <p class="tools-info-text upd-note">The panel checks the archive and shows what changes before anything is installed. The previous version is kept for rollback. Packages, nginx and php-fpm are not touched: for those run <code>install.sh</code> again.</p>
+            </div>
+        </div>
+    </div>
+
+    <button type="button" class="job-pill" id="jobPill" hidden><i class="spin"></i><span id="jobPillText"></span></button>
+
+    <div id="jobModal" class="modal">
+        <div class="modal-content target-content">
+            <div class="modal-head">
+                <h2>Tasks</h2>
+                <span class="close" id="jobClose">&times;</span>
+            </div>
+            <div class="task-toolbar">
+                <button type="button" class="btn btn-small btn-primary" id="jobNewBtn" aria-expanded="false">+ New task <span class="task-caret">▾</span></button>
+            </div>
+            <div class="task-menu" id="jobQuick" hidden></div>
+            <div class="modal-body">
+                <div class="card-note job-busy" id="jobBusy" hidden></div>
+                <div id="jobTasks"></div>
+            </div>
+            <div class="modal-foot">
+                <button type="button" class="btn btn-primary" id="jobDone">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="dpiListsModal" class="modal">
+        <div class="modal-content target-content dpi-lists-content">
+            <div class="modal-head">
+                <h2>DPI check lists</h2>
+                <span class="close" id="dpiListsClose">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="seg dpi-lists-seg" id="dpiListsSeg">
+                    <button type="button" data-p="dns" class="active">DNS</button>
+                    <button type="button" data-p="domains">Domains</button>
+                    <button type="button" data-p="tcp">Hostings</button>
+                    <button type="button" data-p="sni">White SNI</button>
+                    <button type="button" data-p="tg">Telegram</button>
+                </div>
+                <div class="dpi-list-pane" data-p="dns">
+                    <p class="card-note">Names whose answers are compared between the resolvers. They should be blocked by DNS and not sit on a geo CDN, so every resolver gives the same addresses.</p>
+                    <textarea class="dpi-list-text" data-list="dns" rows="8" spellcheck="false"></textarea>
+                    <p class="card-note">Control names: nobody blocks them. If their answers differ, the resolver itself is broken.</p>
+                    <textarea class="dpi-list-text" data-list="dns_control" rows="4" spellcheck="false"></textarea>
+                </div>
+                <div class="dpi-list-pane" data-p="domains" hidden>
+                    <p class="card-note">The base list of the Domains check: one domain per line. A line or its end after # is a comment.</p>
+                    <textarea class="dpi-list-text" data-list="domains" rows="16" spellcheck="false"></textarea>
+                </div>
+                <div class="dpi-list-pane" data-p="tcp" hidden>
+                    <p class="card-note">Addresses for the cut at 16-20 KB, one per line: [id] IP[:port] [AS123] [sni=name] [provider]. Without sni the name example.com is used. Example: 203.0.113.5 AS24940 My VPS</p>
+                    <label class="dpi-sni-field"><span>SNI for the addresses without their own <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="The name put into SNI and Host for every address that has no sni= of its own. Try other names to see which one gets through. Leave it empty to send no SNI at all: the request goes to the bare IP, as dpi-detector does.">i</span></span><input type="text" id="dpiTcpSni" placeholder="no SNI" spellcheck="false"></label>
+                    <textarea class="dpi-list-text" data-list="tcp" rows="14" spellcheck="false"></textarea>
+                </div>
+                <div class="dpi-list-pane" data-p="sni" hidden>
+                    <p class="card-note">Names tried as SNI on the hostings that cut the connection; each one is tried on every such hosting.</p>
+                    <textarea class="dpi-list-text" data-list="sni" rows="16" spellcheck="false"></textarea>
+                </div>
+                <div class="dpi-list-pane" data-p="tg" hidden>
+                    <p class="card-note">Telegram data centers: IP and a name, one per line.</p>
+                    <textarea class="dpi-list-text" data-list="tg" rows="8" spellcheck="false"></textarea>
+                </div>
+            </div>
+            <div class="modal-foot">
+                <span class="foot-msg" id="dpiListsMsg"></span>
+                <button type="button" class="btn" id="dpiListsReset">Reset this tab</button>
+                <button type="button" class="btn" id="dpiListsCancel">Cancel</button>
+                <button type="button" class="btn btn-primary" id="dpiListsSave">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="helpModal" class="modal">
+        <div class="modal-content target-content">
+            <div class="modal-head">
+                <h2>What the header buttons do</h2>
+                <span class="close" id="helpClose">&times;</span>
+            </div>
+            <div class="modal-body help-body">
+                <div class="help-item">
+                    <h4>Apply routes</h4>
+                    <p>Writes the routes into the tables from what is already stored: no DNS lookups, no downloads. Use it after changing an exit or the routing order, or when routes got lost (for example after a router reboot, if the hook is off).</p>
+                </div>
+                <div class="help-item">
+                    <h4>Tasks</h4>
+                    <p>The task manager: what is running now step by step, the queue of waiting tasks (each can be taken out), and the history of the last tasks with their logs. A task started while another one runs waits in the queue.</p>
+                </div>
+                <div class="help-item">
+                    <h4>Refresh everything</h4>
+                    <p>The whole cycle in one go: resolves the domains of all targets, downloads fresh data for every enabled list and applies the routes. It can take several minutes; it runs on the router, so the page can be closed.</p>
+                </div>
+                <div class="help-item">
+                    <h4>Update &amp; apply (Targets)</h4>
+                    <p>Resolves the domains of all targets again through the DNS servers from Settings, then applies the routes. Use it when the addresses of services may have changed.</p>
+                </div>
+                <div class="help-item">
+                    <h4>Sync policies (Policies)</h4>
+                    <p>Reads the policies from Keenetic (names, marks, tables) into the panel. Use it after you created, changed or deleted a policy in Keenetic. Routes of a deleted policy are removed.</p>
+                </div>
+                <div class="help-item">
+                    <h4>Update all (Lists)</h4>
+                    <p>Downloads fresh data for every list from the source and applies the routes itself.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="sourcesModal" class="modal">
+        <div class="modal-content target-content">
+            <div class="modal-head">
+                <h2>List sources</h2>
+                <span class="close" id="sourcesClose">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p class="card-note">Sites the lists are downloaded from. A source must have the same interface as iplist.opencck.org. The first one is used by default.</p>
+                <div id="sourcesList"></div>
+                <button type="button" class="btn btn-small" id="sourceAdd">+ Source</button>
+            </div>
+            <div class="modal-foot">
+                <button type="button" class="btn btn-primary" id="listsSourceSave">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="listCatalogModal" class="modal">
+        <div class="modal-content target-content">
+            <div class="modal-head">
+                <h2>Add lists</h2>
+                <span class="close" id="listCatalogClose">&times;</span>
+            </div>
+            <div class="catalog-steps" id="catalogSteps">
+                <span class="catalog-step active" data-step="1"><b>1</b> Choose lists</span>
+                <span class="catalog-step" data-step="2"><b>2</b> Where to put them</span>
+            </div>
+            <div class="modal-body">
+                <div class="catalog-pane" id="catalogStep1">
+                    <div class="form-group" id="catalogSourceBox">
+                        <label for="catalogSource">Source:</label>
+                        <select id="catalogSource"></select>
+                    </div>
+                    <div class="catalog-groups" id="catalogGroups"></div>
+                    <div class="form-group">
+                        <input type="text" id="catalogSearch" placeholder="Find a site or type its name..." autocomplete="off" spellcheck="false">
+                    </div>
+                    <div class="catalog-groupbar" id="catalogGroupBar">
+                        <span id="catalogGroupName"></span>
+                        <span class="catalog-bar-btns">
+                            <button type="button" class="btn btn-small" id="catalogSelAll">Select all shown</button>
+                            <button type="button" class="btn btn-small" id="catalogSelNone">Clear</button>
+                        </span>
+                    </div>
+                    <div id="catalogList" class="catalog-list"></div>
+                </div>
+                <div class="catalog-pane" id="catalogStep2" hidden>
+                    <div class="catalog-summary" id="catalogSummary"></div>
+                    <div class="form-group">
+                        <label for="catalogPolicy">Add to policy:</label>
+                        <select id="catalogPolicy"></select>
+                    </div>
+                    <div class="form-row catalog-exit">
+                        <div class="form-group">
+                            <label for="catalogInterface">Interface:</label>
+                            <select id="catalogInterface"></select>
+                        </div>
+                        <div class="form-group">
+                            <label for="catalogGateway">or gateway:</label>
+                            <input type="text" id="catalogGateway" placeholder="192.168.1.1" autocomplete="off" spellcheck="false">
+                        </div>
+                    </div>
+                                        <div class="form-group">
+                        <label for="catalogMode">What to route:</label>
+                        <select id="catalogMode">
+                            <option value="networks">Networks and addresses from the source</option>
+                            <option value="resolve">Resolve the source's domains myself (slower)</option>
+                            <option value="both">Networks from the source and resolved domains (slowest)</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-foot">
+                <span class="foot-msg" id="catalogMsg"></span>
+                <button type="button" class="btn" id="catalogRefresh">Reload catalog</button>
+                <button type="button" class="btn" id="catalogBack" hidden>Back</button>
+                <button type="button" class="btn btn-primary" id="catalogNext" disabled>Next</button>
+                <button type="button" class="btn btn-primary" id="catalogAdd" hidden>Add lists</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="listModal" class="modal">
+        <div class="modal-content target-content">
+            <div class="modal-head">
+                <h2 id="listTitle">List</h2>
+                <span class="close" id="listClose">&times;</span>
+            </div>
+            <div class="modal-tabs">
+                <div class="seg" id="listTabs" role="tablist">
+                    <button type="button" data-pane="info" class="active">Overview</button>
+                    <button type="button" data-pane="edit">Settings</button>
+                </div>
+            </div>
+            <div class="modal-body">
+                <div class="tg-pane" data-pane="info" id="listInfo"></div>
+                <div class="tg-pane" data-pane="edit">
+                    <div class="form-group">
+                        <label for="listPolicy">Policy:</label>
+                        <select id="listPolicy"></select>
+                    </div>
+                    <div class="form-row catalog-exit">
+                        <div class="form-group">
+                            <label for="listInterface">Interface:</label>
+                            <select id="listInterface"></select>
+                        </div>
+                        <div class="form-group">
+                            <label for="listGateway">or gateway:</label>
+                            <input type="text" id="listGateway" placeholder="192.168.1.1" autocomplete="off" spellcheck="false">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="listMode">What to route:</label>
+                        <select id="listMode">
+                            <option value="networks">Networks and addresses from the source</option>
+                            <option value="resolve">Resolve the source's domains myself (slower)</option>
+                        <option value="both">Networks from the source and resolved domains (slowest)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Downloaded from:</label>
+                        <div class="list-urls" id="listUrls"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="listExcl">Exclusions (IPs or CIDRs, one per line):</label>
+                        <textarea id="listExcl" rows="4" spellcheck="false" placeholder="1.2.3.0/24"></textarea>
+                    </div>
+                    <label class="check-row"><input type="checkbox" id="listEnabled" checked> <span>Enabled</span></label>
+                    <p class="card-note">Save stores the settings, downloads the list from the source again and rewrites the routes in the router's tables. The result is shown on the Overview tab.</p>
+                </div>
+            </div>
+            <div class="modal-foot tg-foot" data-pane="info">
+                <span class="foot-msg" id="listMsg"></span>
+                <button type="button" class="btn btn-danger" id="listDeleteBtn">Delete</button>
+                <button type="button" class="btn btn-primary" id="listSyncBtn" title="Download fresh data for this list from the source, then apply the routes">↻ Update</button>
+            </div>
+            <div class="modal-foot tg-foot" data-pane="edit">
+                <button type="button" class="btn" id="listCancelBtn">Cancel</button>
+                <button type="button" class="btn btn-primary" id="listSaveBtn">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="tableViewModal" class="modal">
+        <div class="modal-content table-view-content">
+            <span class="close" id="tableViewClose">&times;</span>
+            <h2 id="tableViewTitle">Routes</h2>
+            <input type="text" id="tableViewFilter" placeholder="Filter (searches on the router, not just what's loaded)...">
+            <div id="tableViewList" class="table-view-list"></div>
+            <div id="tableViewStatus" class="table-view-status"></div>
+        </div>
+    </div>
+
+    <!-- bird4.conf wizard -->
+    <div id="birdWizardModal" class="modal">
+        <div class="modal-content bw-content">
+            <span class="close" id="birdWizardClose">&times;</span>
+            <h2>bird4.conf wizard</h2>
+            <div id="birdWizardNote" class="status-banner" hidden></div>
+            <div class="bw-grid">
+                <div class="bw-form" id="birdWizardForm">
+                    <section class="bw-card">
+                        <h4>General</h4>
+                        <div class="bw-fields">
+                            <div class="form-group">
+                                <label for="bwRouterId">Router ID</label>
+                                <input type="text" id="bwRouterId" data-bw="routerId" placeholder="192.168.1.1" spellcheck="false">
+                                <div class="hint">Any unique IPv4, only an identifier.</div>
+                            </div>
+                            <div class="form-group">
+                                <label for="bwTable">Kernel table</label>
+                                <input type="number" id="bwTable" data-bw="table" min="1" max="65535">
+                                <div class="hint">Same number as in "BGP routing hook".</div>
+                            </div>
+                            <div class="form-group">
+                                <label for="bwGateway">Next hop</label>
+                                <input type="text" id="bwGateway" data-bw="gateway" placeholder="10.8.1.0" spellcheck="false">
+                                <div class="hint">Tunnel side address; all BGP routes go via it.</div>
+                            </div>
+                            <div class="form-group">
+                                <label for="bwLocalAs">Local AS</label>
+                                <input type="number" id="bwLocalAs" data-bw="localAs" min="1">
+                            </div>
+                        </div>
+                        <label class="bw-check"><input type="checkbox" id="bwMultihop" data-bw="multihop"> <span>Multihop <span class="hint">neighbor is not directly connected</span></span></label>
+                        <label class="bw-check"><input type="checkbox" id="bwFileLog"> <span>Write bird log to /opt/var/log/bird.log <span class="hint">for the "bird log" viewer</span></span></label>
+                    </section>
+
+                    <section class="bw-card">
+                        <h4>Session stability <span class="hint">(empty = not written to the file)</span></h4>
+                        <div class="bw-fields">
+                            <div class="form-group">
+                                <label for="bwHold">Hold time, s</label>
+                                <input type="number" id="bwHold" min="3">
+                                <div class="hint">Silence from the neighbor longer than this drops the session. The smaller of both sides is used.</div>
+                            </div>
+                            <div class="form-group">
+                                <label for="bwKeepalive">Keepalive, s</label>
+                                <input type="number" id="bwKeepalive" min="1" placeholder="hold / 3">
+                                <div class="hint">How often bird sends a keepalive.</div>
+                            </div>
+                            <div class="form-group">
+                                <label for="bwRetry">Connect retry, s</label>
+                                <input type="number" id="bwRetry" min="1" placeholder="120">
+                                <div class="hint">Pause between connection attempts.</div>
+                            </div>
+                            <div class="form-group">
+                                <label for="bwErrMin">Error wait min, s</label>
+                                <input type="number" id="bwErrMin" min="1" placeholder="60">
+                                <div class="hint">Pause before a restart after an error.</div>
+                            </div>
+                            <div class="form-group">
+                                <label for="bwErrMax">Error wait max, s</label>
+                                <input type="number" id="bwErrMax" min="1" placeholder="300">
+                                <div class="hint">The pause doubles up to this value.</div>
+                            </div>
+                            <div class="form-group">
+                                <label for="bwGracefulTime">Graceful restart time, s</label>
+                                <input type="number" id="bwGracefulTime" min="1" max="4095" placeholder="120">
+                                <div class="hint">Needs graceful restart below.</div>
+                            </div>
+                        </div>
+                        <label class="bw-check"><input type="checkbox" id="bwGraceful"> <span>Graceful restart <span class="hint">keep the neighbor's routes while its session is down (the neighbor must support it)</span></span></label>
+                    </section>
+
+                    <section class="bw-card">
+                        <h4>Neighbors <span class="hint">(checked = active, one BGP session each; unchecked ones stay as commented spares)</span></h4>
+                        <div id="bwNeighbors"></div>
+                        <div class="bw-actions">
+                            <button type="button" class="btn btn-small" id="bwAddNeighbor">+ Neighbor</button>
+                            <select id="bwNbPreset" aria-label="Add a known neighbor"></select>
+                        </div>
+                        <details class="bw-note">
+                            <summary>About the known neighbors</summary>
+                            <div class="hint">antifilter.download (AS 65432, 45.154.73.71): prefixes of resources blocked in Russia, aggregated to /24. Use any local AS except 65432; hold time 240. Communities: 65432:100 subnets, 65432:200 ipsum, 65432:400 Google IPv4, 65432:500 community list. The two AS 65444 entries are taken from a working config; their owner is not confirmed.</div>
+                        </details>
+                    </section>
+
+                    <section class="bw-card">
+                        <h4>Static routes <span class="hint">(via = ISP gateway goes direct, tunnel next hop goes into the tunnel)</span></h4>
+                        <div id="bwRoutes"></div>
+                        <div class="bw-actions">
+                            <button type="button" class="btn btn-small" id="bwAddRoute">+ Route</button>
+                            <select id="bwRoutePreset" aria-label="Add example routes"></select>
+                        </div>
+                    </section>
+                </div>
+                <div class="bw-preview">
+                    <h4>bird4.conf</h4>
+                    <textarea id="birdWizardText" class="file-editor-text" spellcheck="false" wrap="off" readonly></textarea>
+                    <label class="bw-check"><input type="checkbox" id="birdWizardManual"> <span>Edit the text by hand <span class="hint">(the form stops updating it)</span></span></label>
+                </div>
+            </div>
+            <div class="bw-footer">
+                <div id="birdWizardStatus" class="table-view-status"></div>
+                <label class="bw-check"><input type="checkbox" id="birdWizardRestart" checked> <span>Restart bird after saving</span></label>
+                <button class="btn btn-small btn-primary" id="birdWizardSave">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- bird log -->
+    <div id="birdLogModal" class="modal">
+        <div class="modal-content table-view-content bw-content bl-content">
+            <span class="close" id="birdLogClose">&times;</span>
+            <h2>bird log</h2>
+            <div class="bl-toolbar">
+                <button class="btn btn-small" id="birdLogRefresh">↻ Refresh</button>
+                <select id="birdLogLines" aria-label="Lines">
+                    <option value="100">last 100</option>
+                    <option value="300" selected>last 300</option>
+                    <option value="1000">last 1000</option>
+                </select>
+                <label class="bw-check"><input type="checkbox" id="birdLogAuto"> <span>Auto-refresh</span></label>
+                <button class="btn btn-small" id="birdLogClear">Clear</button>
+                <button class="btn btn-small btn-primary" id="birdLogEnable" hidden title="Adds log &quot;/opt/var/log/bird.log&quot; all; to bird4.conf and restarts bird">Enable file log</button>
+                <span id="birdLogSource" class="hint"></span>
+            </div>
+            <pre id="birdLogText" class="bl-text"></pre>
+        </div>
+    </div>
+
+    <!-- Generic file editor modal (bird4.conf) -->
+    <div id="fileEditorModal" class="modal">
+        <div class="modal-content table-view-content">
+            <span class="close" id="fileEditorClose">&times;</span>
+            <h2 id="fileEditorTitle">Edit file</h2>
+            <div id="fileEditorPath" class="cell-mono muted file-editor-path"></div>
+            <textarea id="fileEditorTextarea" class="file-editor-text" spellcheck="false" autocapitalize="off" wrap="off"></textarea>
+            <div class="form-actions">
+                <label class="file-editor-wrap-label">
+                    <input type="checkbox" id="fileEditorWrapToggle">
+                    Wrap long lines
+                </label>
+                <button type="button" class="btn btn-success" id="fileEditorSaveBtn">Save</button>
+                <button type="button" class="btn" id="fileEditorCancel">Close</button>
+            </div>
+            <div id="fileEditorStatus" class="table-view-status"></div>
+        </div>
+    </div>
+
+    <!-- Маршруты конкретной политики, как их отдаёт сам Keenetic
+         (show/ip/policy -> route4.route) - не live ip route show, а
+         штатный взгляд прошивки на то, куда что уходит внутри таблицы
+         этой политики (multi-WAN, floating-маршруты VPN и т.п.). -->
+    <div id="policyRoutesModal" class="modal">
+        <div class="modal-content table-view-content">
+            <span class="close" id="policyRoutesClose">&times;</span>
+            <h2 id="policyRoutesTitle">Policy routes</h2>
+            <div id="policyRoutesList" class="table-view-list"></div>
+        </div>
+    </div>
+
+    <!-- Детали интерфейса - в первую очередь WireGuard-пиры (трафик,
+         рукопожатие, онлайн ли) и точка назначения туннеля. -->
+    <div id="staticRouteModal" class="modal">
+        <div class="modal-content target-content">
+            <div class="modal-head">
+                <h2>Add routes</h2>
+                <span class="close" id="staticRouteClose">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="staticRouteNames">Networks or addresses, one per line:</label>
+                    <textarea id="staticRouteNames" rows="5" placeholder="10.0.0.0/24&#10;203.0.113.5" spellcheck="false"></textarea>
+                </div>
+                <div class="form-row catalog-exit">
+                    <div class="form-group">
+                        <label for="staticRouteInterface">Interface:</label>
+                        <select id="staticRouteInterface"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="staticRouteGateway">or gateway:</label>
+                        <input type="text" id="staticRouteGateway" placeholder="192.168.1.1" autocomplete="off" spellcheck="false">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="staticRouteComment">Comment:</label>
+                    <input type="text" id="staticRouteComment" maxlength="60" autocomplete="off">
+                </div>
+                <label class="check-row"><input type="checkbox" id="staticRouteAuto" checked> <span>Only while the interface is up</span></label>
+                <label class="check-row"><input type="checkbox" id="staticRouteDry"> <span>Preview only: show the request, send nothing</span></label>
+            </div>
+            <div class="modal-foot">
+                <span class="foot-msg" id="staticRouteMsg"></span>
+                <button type="button" class="btn btn-primary" id="staticRouteSave">Add routes</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="rciModal" class="modal">
+        <div class="modal-content target-content">
+            <div class="modal-head">
+                <h2 id="rciTitle">Request to the router</h2>
+                <span class="close" id="rciClose">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p class="card-note" id="rciNote"></p>
+                <h3 style="font-size:13px;">Request</h3>
+                <pre class="job-log" id="rciSent"></pre>
+                <h3 style="font-size:13px;" id="rciReplyHead">Reply</h3>
+                <pre class="job-log" id="rciReply"></pre>
+            </div>
+        </div>
+    </div>
+
+    <div id="interfaceDetailModal" class="modal">
+        <div class="modal-content table-view-content">
+            <span class="close" id="interfaceDetailClose">&times;</span>
+            <h2 id="interfaceDetailTitle">Interface details</h2>
+            <div id="interfaceControl" class="if-control" hidden>
+                <div class="if-control-row">
+                    <span id="ifStateText"></span>
+                    <button class="btn btn-small" id="ifToggleBtn"></button>
+                </div>
+                <div class="if-control-row">
+                    <input type="text" id="ifDescInput" maxlength="64" placeholder="Description" autocomplete="off">
+                    <button class="btn btn-small" id="ifDescSave">Save description</button>
+                </div>
+            </div>
+            <div id="interfaceDetailFacts" class="table-view-list"></div>
+
+            <div class="tools-heading-row" style="margin-top:16px;">
+                <h3 style="font-size:13px;">Live traffic</h3>
+            </div>
+            <div class="conn-toolbar">
+                <button class="btn btn-small" id="interfaceStatRefreshBtn">↻ Refresh</button>
+                <label class="conn-autorefresh-label">
+                    <input type="checkbox" id="interfaceStatAutoRefresh">
+                    Auto-refresh every
+                </label>
+                <select id="interfaceStatAutoRefreshInterval">
+                    <option value="5">5s</option>
+                    <option value="10" selected>10s</option>
+                    <option value="30">30s</option>
+                    <option value="60">60s</option>
+                </select>
+            </div>
+            <div id="interfaceDetailStat" class="table-view-list"></div>
+        </div>
+    </div>
+
+    <!-- Доп. информация по клиенту (rci/show/ip/hotspot/host?mac=...) -
+         опознавание устройства через SSDP/UPnP и то, чего нет в общем
+         списке Clients. Без автообновления - это по сути статические
+         данные (модель устройства не меняется каждые 10 секунд). -->
+    <div id="clientDetailModal" class="modal">
+        <div class="modal-content table-view-content">
+            <span class="close" id="clientDetailClose">&times;</span>
+            <h2 id="clientDetailTitle">Client details</h2>
+            <section id="clientManage" class="client-manage" hidden>
+                <h3>Manage</h3>
+                <div class="manage-row">
+                    <span class="manage-label">Registration <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="A registered client gets a permanent name on the router and can be given an individual access policy.">i</span></span>
+                    <input type="text" id="clientRegName" maxlength="63" placeholder="Client name" aria-label="Client name">
+                    <span class="manage-btns">
+                        <button class="btn btn-small" id="clientRegBtn">Register</button>
+                        <button class="btn btn-small btn-danger" id="clientUnregBtn" hidden>Unregister</button>
+                    </span>
+                </div>
+                <div class="manage-row">
+                    <span class="manage-label">Policy <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="The connection policy for this client. Only registered clients can have one. Default policy means the router's usual routing.">i</span></span>
+                    <select id="clientPolicySel" aria-label="Policy"></select>
+                    <span class="manage-btns"><button class="btn btn-small" id="clientPolicyBtn">Apply</button></span>
+                </div>
+                <p class="card-note" id="clientManageHint" hidden>Register the client first to choose a policy for it.</p>
+                <label class="check-row"><input type="checkbox" id="clientDryRun"> <span>Preview only: show the request, send nothing</span></label>
+            </section>
+            <div id="clientDetailList" class="table-view-list"></div>
+            <div id="clientDetailRaw"></div>
+            <section id="clientConnSection" class="client-conn" hidden>
+                <h3 id="connTitle">Connections</h3>
+                <div class="conn-toolbar">
+                    <input type="text" id="connFilterIp" placeholder="Filter by destination IP...">
+                    <select id="connProtoFilter">
+                        <option value="">All protocols</option>
+                        <option value="tcp">TCP</option>
+                        <option value="udp">UDP</option>
+                        <option value="icmp">ICMP</option>
+                    </select>
+                    <button class="btn btn-small" id="connRefreshBtn">↻ Refresh</button>
+                    <label class="conn-autorefresh-label">
+                        <input type="checkbox" id="connAutoRefresh">
+                        Auto-refresh every
+                    </label>
+                    <select id="connAutoRefreshInterval">
+                        <option value="5">5s</option>
+                        <option value="10" selected>10s</option>
+                        <option value="30">30s</option>
+                        <option value="60">60s</option>
+                    </select>
+                </div>
+                <div id="connList" class="table-view-list"></div>
+                <div id="connStatus" class="table-view-status"></div>
+            </section>
+        </div>
+    </div>
+
+    <!-- Оверлей "идёт операция" - блокирует клики по всей странице, пока
+         Sync/Check&apply/Apply/Save/Delete/Import не завершится, чтобы
+         не наделать лишних кликов поверх незавершённой операции. -->
+    <div id="loadingOverlay" class="loading-overlay" aria-hidden="true">
+        <div class="loading-box">
+            <div class="spinner"></div>
+            <div class="loading-text" id="loadingText">Working on it…</div>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
