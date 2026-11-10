@@ -3260,3 +3260,15 @@ body.job-running .hook-row .hook-switch, body.job-running .src-row button {
 .dpi-run-chip .dpi-run-del { padding: 4px 8px; color: var(--muted); border-left: 1px solid var(--border); font-size: 14px; line-height: 1; }
 .dpi-run-chip .dpi-run-del:hover { color: var(--bad-text); background: rgba(248,113,113,.1); }
 .dpi-run-chip button:hover { background: var(--surface-3); }
+
+/* 5.38.0 GitHub updates */
+.upd-gh { margin: 14px 0 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+.upd-gh-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.upd-gh-status { flex: 1; font-size: 13px; color: var(--muted-2); min-width: 160px; }
+.upd-gh-status a { color: var(--accent-text); }
+.upd-gh-notes { margin-top: 10px; max-height: 260px; overflow-y: auto; border-top: 1px solid var(--border); padding-top: 8px; }
+.upd-gh-note { margin: 6px 0 10px; font-size: 13px; }
+.upd-gh-text { white-space: pre-line; color: var(--muted-2); font-size: 12.5px; margin-top: 3px; }
+.upd-card-gh { font-size: 12px; color: var(--ok-text); background: rgba(52,211,153,.12); padding: 2px 8px; border-radius: 6px; margin: 0 8px; }
+button.version-badge.has-update { color: var(--ok-text); }
+button.version-badge.has-update::after { content: ' ↑'; }

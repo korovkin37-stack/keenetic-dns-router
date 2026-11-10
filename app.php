@@ -1,5 +1,5 @@
 <?php
-const APP_VERSION = '5.37.0';
+const APP_VERSION = '5.38.0';
 const COOKIE_NAME = 'krdns_auth';
 const COOKIE_TTL = 604800;
 
@@ -1521,7 +1521,7 @@ function extHandlers() {
 // Actions that change data or the routes: refused while an update of the whole panel is running.
 const UPDATE_BLOCKS = [
     'syncPolicies', 'importConfig', 'installHooks', 'installCurl', 'installOpenssl', 'installSockets', 'saveBirdConfig', 'restartBird', 'setHookEnabled', 'saveHook', 'resetHook',
-    'clearBirdLog', 'enableBirdLog', 'uploadUpdate', 'applyUpdate', 'rollbackUpdate', 'saveDnsResolver', 'savePanelNet',
+    'clearBirdLog', 'enableBirdLog', 'uploadUpdate', 'applyUpdate', 'rollbackUpdate', 'githubUpdate', 'saveDnsResolver', 'savePanelNet',
     'saveListsSources', 'saveRoutePrefs', 'saveBirdHook',
 ];
 

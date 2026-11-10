@@ -1457,6 +1457,18 @@
 "Delete all": "Удалить все",
 "Delete all saved DPI check runs?": "Удалить все сохранённые прогоны проверки DPI?",
 "Deleted: {0}": "Удалено: {0}",
-"Invalid run": "Неверный прогон"
+"Invalid run": "Неверный прогон",
+"Check for updates": "Проверить обновления",
+"Download and check": "Скачать и проверить",
+"Or drop the archive here": "Или перетащите архив сюда",
+"Asking GitHub…": "Спрашиваю GitHub…",
+"Update available: v{0}": "Доступно обновление: v{0}",
+"available v{0}": "доступна v{0}",
+"v{0} is the latest version (checked {1})": "v{0} — последняя версия (проверено {1})",
+"Available: v{0}": "Доступна: v{0}",
+"release page": "страница релиза",
+"Downloading from GitHub…": "Скачиваю с GitHub…",
+"GitHub gave no release": "GitHub не вернул релиз",
+"The release has no dns-router.tar.gz": "В релизе нет dns-router.tar.gz"
 }
 }

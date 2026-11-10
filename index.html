@@ -76,7 +76,7 @@
                 <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h10a4 4 0 0 1 0 8H8"></path><path d="M7 5L4 8l3 3"></path></svg></span>
                 <div class="brand-text">
                     <h1>Keenetic DNS Router</h1>
-                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.37.0</button>
+                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.38.0</button>
                 </div>
             </div>
             <nav class="tabs" id="mainNav" aria-label="Sections">
@@ -432,7 +432,7 @@
                 </div>
                 <div class="set-row">
                     <span class="look-label">Installed version</span>
-                    <span class="set-ctl"><span class="upd-num" id="updCardVer">…</span><button class="btn btn-primary btn-small" id="openUpdateBtn">Update</button></span>
+                    <span class="set-ctl"><span class="upd-num" id="updCardVer">…</span><span class="upd-card-gh" id="updCardGh" hidden></span><button class="btn btn-primary btn-small" id="openUpdateBtn">Update</button></span>
                 </div>
             </div>
         </div>
@@ -675,6 +675,15 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
                         <div class="upd-drop-sub">dns-router.tar.gz</div>
                         <button class="btn btn-small btn-primary" id="updatePickBtn" type="button">Choose archive…</button>
                     </div>
+                </div>
+                <div class="upd-gh">
+                    <div class="upd-gh-head">
+                        <span class="upd-label">GitHub</span>
+                        <span class="upd-gh-status" id="updGhStatus"></span>
+                        <button class="btn btn-small" id="updGhCheck" type="button">Check for updates</button>
+                        <button class="btn btn-small btn-primary" id="updGhGet" type="button" hidden>Download and check</button>
+                    </div>
+                    <div id="updGhNotes" class="upd-gh-notes" hidden></div>
                 </div>
                 <div id="updatePreview" class="update-preview" hidden></div>
                 <p class="tools-info-text upd-note">The panel checks the archive and shows what changes before anything is installed. The previous version is kept for rollback. Packages, nginx and php-fpm are not touched: for those run <code>install.sh</code> again.</p>

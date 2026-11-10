@@ -649,6 +649,8 @@ function initApp() {
     });
     initHooksAndLog();
     initUpdate();
+    // once on start, from the 6-hour cache of the server: the version badge shows when a new release is out
+    setTimeout(() => checkGithubUpdate(false), 3000);
     initBirdWizard();
     ['birdTunnel', 'birdTable', 'birdPolicy', 'birdPeerRoute'].forEach(id => {
         const el = document.getElementById(id);
@@ -2239,6 +2241,55 @@ async function saveFileEditorContent() {
 }
 // ============================================ FILE EDITOR (generic) ============================================
 
+
+// ---- updates from GitHub
+let githubUpdate = null;
+
+async function checkGithubUpdate(force) {
+    const status = document.getElementById('updGhStatus');
+    const notes = document.getElementById('updGhNotes');
+    const get = document.getElementById('updGhGet');
+    if (force) status.textContent = t('Asking GitHub…');
+    let r;
+    try {
+        r = await (await apiFetch(API + '?action=checkGithubUpdate' + (force ? '&force=1' : ''))).json();
+    } catch (error) {
+        r = { success: false, error: error.message };
+    }
+    githubUpdate = r.success ? r : null;
+    const badge = document.getElementById('versionBtn');
+    const card = document.getElementById('updCardGh');
+    if (!r.success) {
+        if (force) status.textContent = t(r.error || 'Failed');
+        return;
+    }
+    const when = r.published ? new Date(r.published).toLocaleDateString(i18nLocale()) : '';
+    badge.classList.toggle('has-update', r.newer);
+    badge.title = r.newer ? t('Update available: v{0}', r.latest) : t('Panel update');
+    card.hidden = !r.newer;
+    card.textContent = r.newer ? t('available v{0}', r.latest) : '';
+    get.hidden = !r.newer || !r.asset;
+    if (!r.newer) {
+        status.textContent = t('v{0} is the latest version (checked {1})', r.current, new Date(r.checked * 1000).toLocaleString(i18nLocale(), { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }));
+        notes.hidden = true;
+        return;
+    }
+    status.innerHTML = `${escapeHtml(t('Available: v{0}', r.latest))}${when ? ' · ' + escapeHtml(when) : ''} · <a href="${escapeHtml(r.url)}" target="_blank" rel="noopener">${escapeHtml(t('release page'))}</a>`;
+    notes.hidden = !r.notes.length;
+    notes.innerHTML = r.notes.map(n => `<div class="upd-gh-note"><b>${escapeHtml(n.title)}</b><div class="upd-gh-text" data-notr>${escapeHtml(n.text)}</div></div>`).join('');
+}
+
+document.getElementById('updGhCheck').addEventListener('click', () => checkGithubUpdate(true));
+document.getElementById('updGhGet').addEventListener('click', async () => {
+    try {
+        showLoading('Downloading from GitHub…');
+        showUpdatePreview(await api({ action: 'githubUpdate' }));
+    } catch (error) {
+        showToast('Failed: ' + error.message, 'error', 8000);
+    } finally {
+        hideLoading();
+    }
+});
 // ============================================ UPDATE ============================================
 let updateToken = null;
 
@@ -2280,14 +2331,47 @@ async function afterUpdate(message) {
     setTimeout(refreshAssets, 1200);
 }
 
-document.getElementById('openUpdateBtn').addEventListener('click', () => { document.getElementById('updateModal').style.display = 'block'; });
+document.getElementById('openUpdateBtn').addEventListener('click', () => {
+    checkGithubUpdate(false);
+    document.getElementById('updateModal').style.display = 'block';
+});
 document.getElementById('versionBtn').addEventListener('click', () => {
     loadUpdateInfo();
+    checkGithubUpdate(false);
     document.getElementById('updateModal').style.display = 'block';
 });
 document.getElementById('updateClose').addEventListener('click', () => { document.getElementById('updateModal').style.display = 'none'; });
 document.getElementById('headerHelpBtn').addEventListener('click', () => { document.getElementById('helpModal').style.display = 'block'; });
 document.getElementById('helpClose').addEventListener('click', () => { document.getElementById('helpModal').style.display = 'none'; });
+
+// What an uploaded or downloaded archive would change, with the Install button
+function showUpdatePreview(r) {
+    const preview = document.getElementById('updatePreview');
+    preview.hidden = false;
+    if (!r.success) {
+        updateToken = null;
+        preview.innerHTML = `<div class="upd-error"><b>Not accepted</b><div>${escapeHtml(r.error || 'Unknown error')}</div></div>`;
+        return;
+    }
+    updateToken = r.token;
+    const changed = r.files.filter(f => f.changed).length;
+    preview.innerHTML = `<div class="upd-title">${r.version_new ? escapeHtml(t('Version {0} → {1}', r.version_current, r.version_new)) : escapeHtml(t('Files only'))}</div>
+        <div class="upd-files">${r.files.map(f => `<div class="upd-file${f.changed ? '' : ' u-same'}"><span class="upd-fname" data-notr>${escapeHtml(f.name)}</span><span class="upd-fsize">${(f.size / 1024).toFixed(1)} KB</span><span class="upd-badge ${f.changed ? 'new' : 'same'}">${f.changed ? t('changed') : t('same')}</span></div>`).join('')}</div>
+        <div class="form-actions"><button class="btn btn-primary" id="updateApplyBtn"${changed ? '' : ' disabled'}>Install</button><button class="btn" id="updateCancelBtn">Cancel</button></div>`;
+    document.getElementById('updateCancelBtn').addEventListener('click', () => { updateToken = null; preview.hidden = true; });
+    document.getElementById('updateApplyBtn').addEventListener('click', async () => {
+        try {
+            showLoading('Installing…');
+            const a = await api({ action: 'applyUpdate', token: updateToken });
+            if (a.success) afterUpdate('Updated to ' + (a.version || 'the new version') + ', reloading…');
+            else showToast(a.error || 'Failed', 'error', 8000);
+        } catch (error) {
+            showToast('Failed: ' + error.message, 'error', 8000);
+        } finally {
+            hideLoading();
+        }
+    });
+}
 
 function initUpdate() {
     const pick = document.getElementById('updatePickBtn');
@@ -2309,30 +2393,7 @@ function initUpdate() {
         try {
             showLoading('Checking the archive…');
             const r = await api({ action: 'uploadUpdate', data: await fileToBase64(file) });
-            preview.hidden = false;
-            if (!r.success) {
-                updateToken = null;
-                preview.innerHTML = `<div class="upd-error"><b>Not accepted</b><div>${escapeHtml(r.error || 'Unknown error')}</div></div>`;
-                return;
-            }
-            updateToken = r.token;
-            const changed = r.files.filter(f => f.changed).length;
-            preview.innerHTML = `<div class="upd-title">${r.version_new ? escapeHtml(t('Version {0} → {1}', r.version_current, r.version_new)) : escapeHtml(t('Files only'))}</div>
-                <div class="upd-files">${r.files.map(f => `<div class="upd-file${f.changed ? '' : ' u-same'}"><span class="upd-fname" data-notr>${escapeHtml(f.name)}</span><span class="upd-fsize">${(f.size / 1024).toFixed(1)} KB</span><span class="upd-badge ${f.changed ? 'new' : 'same'}">${f.changed ? t('changed') : t('same')}</span></div>`).join('')}</div>
-                <div class="form-actions"><button class="btn btn-primary" id="updateApplyBtn"${changed ? '' : ' disabled'}>Install</button><button class="btn" id="updateCancelBtn">Cancel</button></div>`;
-            document.getElementById('updateCancelBtn').addEventListener('click', () => { updateToken = null; preview.hidden = true; });
-            document.getElementById('updateApplyBtn').addEventListener('click', async () => {
-                try {
-                    showLoading('Installing…');
-                    const a = await api({ action: 'applyUpdate', token: updateToken });
-                    if (a.success) afterUpdate('Updated to ' + (a.version || 'the new version') + ', reloading…');
-                    else showToast(a.error || 'Failed', 'error', 8000);
-                } catch (error) {
-                    showToast('Failed: ' + error.message, 'error', 8000);
-                } finally {
-                    hideLoading();
-                }
-            });
+            showUpdatePreview(r);
         } catch (error) {
             showToast('Failed: ' + error.message, 'error', 8000);
         } finally {

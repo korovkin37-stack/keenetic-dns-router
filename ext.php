@@ -1355,9 +1355,15 @@ function updateParseTar($data) {
 
 // Step 1: the archive comes in as base64; nothing is installed yet.
 function doUploadUpdate($b64) {
-    global $php_cli;
     $raw = base64_decode((string)$b64, true);
-    if ($raw === false || strlen($raw) < 100) return ['success' => false, 'error' => 'The file is empty or damaged'];
+    if ($raw === false) return ['success' => false, 'error' => 'The file is empty or damaged'];
+    return updateStage($raw);
+}
+
+// Unpacks and checks an archive into a temporary folder; the answer lists the files and the token for applyUpdate
+function updateStage($raw) {
+    global $php_cli;
+    if (strlen($raw) < 100) return ['success' => false, 'error' => 'The file is empty or damaged'];
     if (strlen($raw) > 5 * 1024 * 1024) return ['success' => false, 'error' => 'The archive is larger than 5 MB'];
 
     foreach (glob(sys_get_temp_dir() . '/dnsr_update_*') ?: [] as $old) {
@@ -1400,6 +1406,68 @@ function doUploadUpdate($b64) {
     return ['success' => true, 'token' => $token, 'files' => $files,
         'version_new' => in_array('app.php', $names, true) ? fileVersion("$dir/app.php") : null,
         'version_current' => APP_VERSION];
+}
+
+// ---- updates from the GitHub releases of the project
+
+const GITHUB_REPO = 'korovkin37-stack/keenetic-dns-router';
+
+// The newest release and what changed since the installed version (the CHANGELOG.md of that tag).
+// The answer is kept for 6 hours, so opening the page does not ask GitHub every time.
+function doCheckGithubUpdate($in) {
+    $cacheFile = sys_get_temp_dir() . '/dns-router-github.json';
+    $cache = json_decode((string)@file_get_contents($cacheFile), true);
+    if ($cache && empty($in['force']) && $cache['checked'] > time() - 6 * 3600 && $cache['current'] === APP_VERSION) return $cache;
+
+    $tmp = tempnam(sys_get_temp_dir(), 'krgh_');
+    $error = listsDownload('https://api.github.com/repos/' . GITHUB_REPO . '/releases/latest', $tmp);
+    $release = json_decode((string)file_get_contents($tmp), true);
+    @unlink($tmp);
+    if ($error !== '') return ['success' => false, 'error' => $error];
+    if (!is_array($release) || empty($release['tag_name'])) return ['success' => false, 'error' => 'GitHub gave no release'];
+
+    $tag = (string)$release['tag_name'];
+    $latest = ltrim($tag, 'v');
+    $asset = '';
+    foreach ((array)($release['assets'] ?? []) as $a) {
+        if (($a['name'] ?? '') === 'dns-router.tar.gz') $asset = (string)$a['browser_download_url'];
+    }
+
+    $notes = [];
+    $newer = version_compare($latest, APP_VERSION, '>');
+    if ($newer) {
+        $tmp = tempnam(sys_get_temp_dir(), 'krgh_');
+        if (listsDownload('https://raw.githubusercontent.com/' . GITHUB_REPO . '/' . rawurlencode($tag) . '/CHANGELOG.md', $tmp) === '') {
+            $parts = preg_split('/^## +(.+)$/m', (string)file_get_contents($tmp), -1, PREG_SPLIT_DELIM_CAPTURE);
+            for ($i = 1; $i + 1 < count($parts) && count($notes) < 10; $i += 2) {
+                // "5.36" or "5.31–5.33": the first version in the heading decides
+                if (!preg_match('/\d+\.\d+(\.\d+)?/', $parts[$i], $m)) continue;
+                if (version_compare($m[0], APP_VERSION, '<=')) continue;
+                $notes[] = ['title' => trim($parts[$i]), 'text' => trim($parts[$i + 1])];
+            }
+        }
+        @unlink($tmp);
+    }
+
+    $result = ['success' => true, 'current' => APP_VERSION, 'latest' => $latest, 'tag' => $tag, 'newer' => $newer,
+        'published' => (string)($release['published_at'] ?? ''), 'url' => (string)($release['html_url'] ?? ''), 'asset' => $asset,
+        'notes' => $notes, 'checked' => time()];
+    file_put_contents($cacheFile, json_encode($result));
+    @chmod($cacheFile, 0666);
+    return $result;
+}
+
+// Downloads the archive of the newest release and checks it the same way as an uploaded one
+function doGithubDownloadUpdate() {
+    $check = doCheckGithubUpdate([]);
+    if (!$check['success']) return $check;
+    if ($check['asset'] === '') return ['success' => false, 'error' => 'The release has no dns-router.tar.gz'];
+    $tmp = tempnam(sys_get_temp_dir(), 'krgh_');
+    $error = listsDownload($check['asset'], $tmp);
+    $raw = (string)file_get_contents($tmp);
+    @unlink($tmp);
+    if ($error !== '') return ['success' => false, 'error' => $error];
+    return updateStage($raw);
 }
 
 // Copies $src/<names> into the panel folder as root. Current files go to backup/new, which becomes backup/prev only if everything was copied.
@@ -4181,6 +4249,8 @@ return [
     'applyUpdate'         => fn($in) => doApplyUpdate($in['token'] ?? ''),
     'getUpdateInfo'       => 'doGetUpdateInfo',
     'rollbackUpdate'      => 'doRollbackUpdate',
+    'checkGithubUpdate'   => fn($in) => doCheckGithubUpdate($in),
+    'githubUpdate'        => fn() => doGithubDownloadUpdate(),
     'getDnsResolver'      => fn() => withDb('doGetDnsResolver'),
     'saveDnsResolver'     => fn($in) => withDb(fn($db) => doSaveDnsResolver($db, $in)),
     'getJobSettings'      => fn() => withDb(fn($db) => ['delay' => (int)getSetting($db, 'job_delay')]),
