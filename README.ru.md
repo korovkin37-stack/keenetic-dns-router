@@ -64,6 +64,12 @@ php-cli app.php passwd P  сменить пароль панели
 
 Строки интерфейса пишутся по-английски, перевод лежит в `lang.<код>.json` рядом с `index.html`: ключ — английский текст, `{0}`, `{1}` — подставляемые значения. Новый язык можно положить в архив обновления, он появится в списке сам. Образец — `lang.ru.json`.
 
+## Скриншоты
+![Targets](docs/screenshots/targets.png)
+![Lists](docs/screenshots/lists.png)
+![Routing tables](docs/screenshots/routing_tables.png)
+![Diagnostics](docs/screenshots/diagnostics.png)
+
 ## Лицензия
 
 [MIT](LICENSE). Сторонние материалы и их лицензии — в [NOTICE.md](NOTICE.md).
