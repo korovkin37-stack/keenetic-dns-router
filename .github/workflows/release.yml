@@ -19,6 +19,8 @@ jobs:
           ver=$(sed -n "s/^const APP_VERSION = '\(.*\)';/\1/p" app.php)
           [ "$tag" = "$ver" ] || { echo "tag v$tag, but APP_VERSION in app.php is $ver"; exit 1; }
           grep -q "v$ver" index.html || { echo "index.html still shows another version"; exit 1; }
+          grep -q "^const JS_VERSION = '$ver';" app.js || { echo "JS_VERSION in app.js is not $ver"; exit 1; }
+          node --check app.js
           php -l app.php && php -l ext.php
           python3 -c "import json; json.load(open('lang.ru.json'))"
           sh -n install.sh

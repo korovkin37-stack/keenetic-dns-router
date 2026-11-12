@@ -1,5 +1,5 @@
 <?php
-const APP_VERSION = '5.39.0';
+const APP_VERSION = '5.40.0';
 const COOKIE_NAME = 'krdns_auth';
 const COOKIE_TTL = 604800;
 
@@ -155,6 +155,22 @@ function getDb() {
         if (!isset($listCols['resolved'])) $db->exec("ALTER TABLE lists ADD COLUMN resolved TEXT DEFAULT ''");
         if (!isset($listCols['source'])) $db->exec("ALTER TABLE lists ADD COLUMN source TEXT DEFAULT ''");
         if (!isset($listCols['stats'])) $db->exec("ALTER TABLE lists ADD COLUMN stats TEXT DEFAULT ''");
+        // DPI runs live in the database: a folder next to it would be served by nginx when the database sits in the web folder
+        $db->exec('CREATE TABLE IF NOT EXISTS dpi_runs (id TEXT PRIMARY KEY, started INTEGER NOT NULL, summary TEXT, data TEXT)');
+        $oldDir = dirname($db_file) . '/dpi';
+        foreach (glob($oldDir . '/run-*.json') ?: [] as $file) {
+            $run = json_decode((string)file_get_contents($file), true);
+            if ($run) {
+                $st = $db->prepare('INSERT OR IGNORE INTO dpi_runs (id, started, summary, data) VALUES (:id, :started, :summary, :data)');
+                $st->bindValue(':id', (string)$run['id']);
+                $st->bindValue(':started', (int)$run['started']);
+                $st->bindValue(':summary', json_encode($run['summary']));
+                $st->bindValue(':data', json_encode($run, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                $st->execute();
+            }
+            @unlink($file);
+        }
+        if (is_dir($oldDir)) @rmdir($oldDir);
         $migrated = true;
     }
     return $db;
@@ -251,9 +267,6 @@ function ipRouteBatch(array $lines) {
     $out = execAsRoot(['/opt/sbin/ip', '-force', '-batch', $tmp]);
     unlink($tmp);
     return $out;
-}
-function ipRuleAdd($mark, $table, $pref) {
-    return execAsRoot(['/opt/sbin/ip', 'rule', 'add', 'fwmark', $mark, 'table', (string)$table, 'pref', (string)$pref]);
 }
 
 // Rule order: targets, lists and BGP each get a pref (lower is looked at first).
@@ -365,6 +378,7 @@ function getNextFreeTable(SQLite3 $db, $start) {
     while (isset($used[$table])) {
         $table++;
     }
+    if ($table >= $start + 100) fail('At most 100 policies are supported');
     $used[$table] = true;
     return $table;
 }
@@ -607,6 +621,10 @@ function doSyncPolicies(SQLite3 $db) {
     if (!$keenetic_policies && $db_policies) {
         return ['success' => false, 'error' => 'Keenetic returned no policies: nothing was changed'];
     }
+    // Lists use the table 100 above the policy's own one: more than 100 policies would collide
+    if (count($keenetic_policies) > 100) {
+        return ['success' => false, 'error' => 'At most 100 policies are supported'];
+    }
 
     $deleted_id = $db->querySingle("SELECT id FROM policies WHERE name = 'DELETED'");
     if (!$deleted_id) {
@@ -624,7 +642,11 @@ function doSyncPolicies(SQLite3 $db) {
     foreach ($keenetic_policies as $name => $data) {
         if (!is_array($data)) continue;
 
-        $mark = '0x' . ltrim($data['mark'] ?? '', '0x');
+        // the mark goes into ip rule and the bird hook: only plain hex is taken
+        $mark = strtolower((string)($data['mark'] ?? ''));
+        if (str_starts_with($mark, '0x')) $mark = substr($mark, 2);
+        if (!preg_match('/^[0-9a-f]{1,8}$/', $mark)) continue;
+        $mark = '0x' . $mark;
         $keenetic_table = (int)($data['table4'] ?? 0);
         $description = (string)($data['description'] ?? '');
 
@@ -680,7 +702,7 @@ function doSyncPolicies(SQLite3 $db) {
     return ['success' => true, 'added' => $added, 'updated' => $updated, 'removed' => $removed];
 }
 
-// Flush and rebuild every policy table. Rules of Keenetic's own tables (keenetic_table) are never touched.
+// Brings every policy table to what the targets and lists want. Rules of Keenetic's own tables (keenetic_table) are never touched.
 function doApplyRoutes(SQLite3 $db) {
     $policies = [];
     $result = $db->query("SELECT id, name, mark_hex, our_table FROM policies WHERE name != 'DELETED'");
@@ -691,20 +713,7 @@ function doApplyRoutes(SQLite3 $db) {
         return ['success' => false, 'error' => 'No active policies'];
     }
 
-    // Rules written with the prefs of the previous apply are removed as well, so changing a pref leaves nothing behind.
     $prefs = routePrefs($db);
-    $previous = array_map('intval', explode(' ', (string)getSetting($db, 'pref_applied')));
-    foreach ($policies as $policy) {
-        $listTable = listTable($policy['our_table']);
-        foreach (array_unique(array_merge([$prefs['targets'], $prefs['lists']], $previous)) as $pref) {
-            if ($pref < 1) continue;
-            ipRuleDel($policy['mark_hex'], $policy['our_table'], $pref);
-            ipRuleDel($policy['mark_hex'], $listTable, $pref);
-        }
-        ipRouteFlush($policy['our_table']);
-        ipRouteFlush($listTable);
-    }
-    setSetting($db, 'pref_applied', $prefs['targets'] . ' ' . $prefs['lists']);
 
     $domains = [];
     $result = $db->query('SELECT d.id, d.domain, d.policy_id, d.interface, d.gateway, d.current_ip FROM domains d WHERE d.enabled = 1 AND d.current_ip IS NOT NULL');
@@ -744,43 +753,65 @@ function doApplyRoutes(SQLite3 $db) {
         ];
     }
 
-    if (empty($domains) && empty($lists)) {
-        return ['success' => true, 'routes' => 0, 'domains' => 0, 'policies' => 0];
-    }
-
-    $total_routes = 0;
-    $rule_added = [];
+    // What every table must hold: destination (as ip prints it) => the route command
+    $want = [];
     $policy_seen = [];
-    $batch = [];
     foreach (array_merge($lists, $domains) as $domain) {
         $policy = $domain['policy'];
-        $mark = $policy['mark_hex'];
-        $isList = !empty($domain['is_list']);
-        $table = $isList ? listTable($policy['our_table']) : $policy['our_table'];
-
+        $table = !empty($domain['is_list']) ? listTable($policy['our_table']) : $policy['our_table'];
         $policy_seen[$policy['id']] = true;
-        if (!isset($rule_added[$table])) {
-            ipRuleAdd($mark, $table, $isList ? $prefs['lists'] : $prefs['targets']);
-            $rule_added[$table] = true;
-        }
-
         foreach ($domain['ips'] as $ip) {
-            $line = 'route replace ' . $ip . ' table ' . $table;
+            [$addr, $len] = array_pad(explode('/', trim($ip), 2), 2, '32');
+            if (!isValidIPv4($addr)) continue;
+            $len = (int)$len;
+            $dest = $len === 32 ? $addr : long2ip(ip2long($addr) & (-1 << (32 - $len))) . '/' . $len;
+            $line = 'route replace ' . $dest . ' table ' . $table;
             if ($domain['gateway'])   $line .= ' via ' . $domain['gateway'];
             if ($domain['interface']) $line .= ' dev ' . $domain['interface'];
-            $batch[$table][$line] = true;
+            $want[$table][$dest] = $line;
         }
     }
 
+    // The tables are never emptied: new routes are written over the old ones, then the routes nobody wants are removed.
+    // Traffic of a target keeps its route the whole time.
+    $replace = [];
+    foreach ($want as $lines) {
+        foreach ($lines as $line) $replace[] = $line;
+    }
     $route_errors = 0;
     $route_error = '';
-    foreach ($batch as $table => $lines) {
-        $out = (string)ipRouteBatch(array_keys($lines));
-        $route_errors += preg_match_all('/^Command failed/m', $out);
-        if ($route_error === '' && preg_match('/^(?!Command failed).*\S.*$/m', $out, $m)) $route_error = trim($m[0]);
-        $total_routes += count($lines);
+    if ($replace) {
+        $out = (string)ipRouteBatch($replace);
+        $route_errors = preg_match_all('/^Command failed/m', $out);
+        if (preg_match('/^(?!Command failed).*\S.*$/m', $out, $m)) $route_error = trim($m[0]);
     }
 
+    // Rules written with the prefs of the previous apply are removed as well, so changing a pref leaves nothing behind.
+    $previous = array_map('intval', explode(' ', (string)getSetting($db, 'pref_applied')));
+    $cleanup = [];
+    foreach ($policies as $policy) {
+        $mark = $policy['mark_hex'];
+        $tables = [$policy['our_table'] => $prefs['targets'], listTable($policy['our_table']) => $prefs['lists']];
+        foreach ($tables as $table => $pref) {
+            $current = execReadOnly(['/opt/sbin/ip', 'route', 'show', 'table', (string)$table]);
+            foreach (explode("\n", $current) as $row) {
+                $parts = preg_split('/\s+/', trim($row));
+                if (in_array($parts[0], ['unreachable', 'blackhole', 'prohibit', 'throw'], true)) array_shift($parts);
+                $dest = $parts[0];
+                if (!preg_match('~^\d+\.\d+\.\d+\.\d+(/\d+)?$~', $dest) || isset($want[$table][$dest])) continue;
+                $cleanup[] = 'route del ' . $dest . ' table ' . $table;
+            }
+            foreach (array_unique(array_merge([$prefs['targets'], $prefs['lists']], $previous)) as $old) {
+                if ($old > 0) $cleanup[] = "rule del fwmark $mark table $table pref $old";
+            }
+            if (isset($want[$table])) $cleanup[] = "rule add fwmark $mark table $table pref $pref";
+        }
+    }
+    ipRouteBatch($cleanup);
+    setSetting($db, 'pref_applied', $prefs['targets'] . ' ' . $prefs['lists']);
+
+    $total_routes = 0;
+    foreach ($want as $lines) $total_routes += count($lines);
     return [
         'success'  => true,
         'routes'   => $total_routes,
@@ -806,7 +837,7 @@ function readTarget(array $in) {
         'policy_id' => (int)($in['policy_id'] ?? 0),
         'interface' => trim((string)($in['interface'] ?? '')),
         'gateway'   => trim((string)($in['gateway'] ?? '')),
-        'enabled'   => isset($in['enabled']) ? (int)$in['enabled'] : 1,
+        'enabled'   => !isset($in['enabled']) || filter_var($in['enabled'], FILTER_VALIDATE_BOOLEAN) ? 1 : 0,
     ];
     if (!isValidTarget($t['domain'])) fail('Invalid domain, IP or CIDR');
     if ($t['policy_id'] <= 0) fail('Valid policy is required');
@@ -859,6 +890,7 @@ function updateDomain($in) {
     if ($id <= 0) fail('Valid ID is required');
     $t = readTarget($in);
     return withDb(function ($db) use ($id, $t, $in) {
+        if (!$db->querySingle('SELECT id FROM policies WHERE id = ' . $t['policy_id'])) fail('Policy not found');
         if (targetExists($db, $t['domain'], $t['policy_id'], $id)) fail('Domain already exists for this policy');
 
         $st = $db->prepare("UPDATE domains SET domain = :domain, policy_id = :pid, interface = :iface, gateway = :gw,
@@ -866,6 +898,7 @@ function updateDomain($in) {
         bindTarget($st, $t);
         $st->bindValue(':id', $id, SQLITE3_INTEGER);
         $st->execute() or fail('Failed to update domain', 500);
+        if (!$db->changes()) fail('Target not found', 404);
         return ['success' => true] + queueTargets($db, $in, [$id]);
     });
 }
@@ -877,6 +910,7 @@ function deleteDomain($in) {
         $st = $db->prepare('DELETE FROM domains WHERE id = :id');
         $st->bindValue(':id', $id, SQLITE3_INTEGER);
         $st->execute() or fail('Failed to delete domain', 500);
+        if (!$db->changes()) fail('Target not found', 404);
         return ['success' => true] + queueTargets($db, $in, []);
     });
 }
@@ -893,6 +927,7 @@ function saveTargetDns($in) {
         $st->bindValue(':skip', implode(' ', array_unique($skip)), SQLITE3_TEXT);
         $st->bindValue(':id', $id, SQLITE3_INTEGER);
         $st->execute() or fail('Failed to save', 500);
+        if (!$db->changes()) fail('Target not found', 404);
         return ['success' => true];
     });
 }
@@ -901,7 +936,10 @@ function saveTargetDns($in) {
 function refreshTarget($in) {
     $id = (int)($in['id'] ?? 0);
     if ($id <= 0) fail('Valid ID is required');
-    return withDb(fn($db) => queueTargets($db, [], [$id]));
+    return withDb(function ($db) use ($id) {
+        if (!$db->querySingle('SELECT id FROM domains WHERE id = ' . $id)) fail('Target not found', 404);
+        return queueTargets($db, [], [$id]);
+    });
 }
 
 function doExportConfig(SQLite3 $db) {
@@ -957,6 +995,8 @@ function doImportConfig(SQLite3 $db, $data) {
     $prune = !isset($data['prune']) || (bool)$data['prune'];
     $scopePolicyIds = [];
 
+    // all or nothing: a file that breaks half way leaves the targets as they were (and one fsync instead of thousands)
+    $db->exec('BEGIN');
     $imported = 0;
     $updated = 0;
     $skipped = [];
@@ -974,7 +1014,7 @@ function doImportConfig(SQLite3 $db, $data) {
         }
         $interface = isset($entry['interface']) ? trim((string)$entry['interface']) : '';
         $gateway = isset($entry['gateway']) ? trim((string)$entry['gateway']) : '';
-        $enabled = isset($entry['enabled']) ? (int)$entry['enabled'] : 1;
+        $enabled = !isset($entry['enabled']) || filter_var($entry['enabled'], FILTER_VALIDATE_BOOLEAN) ? 1 : 0;
 
         if (!isValidTarget($target) || !isset($policies[$policyName])
             || !isValidInterface($interface) || !isValidGateway($gateway)) {
@@ -1028,6 +1068,7 @@ function doImportConfig(SQLite3 $db, $data) {
         }
     }
 
+    $db->exec('COMMIT');
     return ['success' => true, 'imported' => $imported, 'updated' => $updated, 'removed' => $removed, 'skipped' => $skipped];
 }
 
@@ -1082,6 +1123,7 @@ function birdHook() {
     $p = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
     if (!$p) return null;
 
+    if (!preg_match('/^0x[0-9a-f]{1,8}$/i', $p['mark_hex'])) return null;
     $rule = "fwmark {$p['mark_hex']} table {$s['table']} pref " . routePrefs($db)['bgp'];
     $init = escapeshellarg($bird_init_script);
     // The BGP session is opened by the router itself, so it uses the main table: a host route there sends it into the tunnel.
@@ -1420,6 +1462,10 @@ function doCreateDatabase() {
         $db->close();
         return ['success' => false, 'error' => 'Invalid API response format', 'log' => $log];
     }
+    if (count($data) > 100) {
+        $db->close();
+        return ['success' => false, 'error' => 'At most 100 policies are supported', 'log' => $log];
+    }
 
     $stmt = $db->prepare('INSERT INTO policies (name, description, mark_hex, keenetic_table, our_table)
                            VALUES (:name, :descr, :mark, :kt, :table)');
@@ -1430,9 +1476,14 @@ function doCreateDatabase() {
         if (!is_array($policy_data)) continue;
 
         $description = (string)($policy_data['description'] ?? '');
-        $mark = $policy_data['mark'] ?? '';
+        $mark = strtolower((string)($policy_data['mark'] ?? ''));
+        if (str_starts_with($mark, '0x')) $mark = substr($mark, 2);
+        if (!preg_match('/^[0-9a-f]{1,8}$/', $mark)) {
+            $log[] = "  ! $policy_name: no valid mark, skipped";
+            continue;
+        }
         $keenetic_table = (int)($policy_data['table4'] ?? 0);
-        $mark_hex = '0x' . ltrim($mark, '0x');
+        $mark_hex = '0x' . $mark;
         $our_table = $our_table_start + $index;
 
         $stmt->reset();
@@ -1545,14 +1596,14 @@ function extHandlers() {
     return $handlers ??= require __DIR__ . '/ext.php';
 }
 
-// Actions that change data or the routes: refused while an update of the whole panel is running.
+// Actions that change data or the routes: refused while a task of the task manager (updating targets and routes) is running.
 const UPDATE_BLOCKS = [
     'syncPolicies', 'importConfig', 'installHooks', 'installCurl', 'installOpenssl', 'installSockets', 'saveBirdConfig', 'restartBird', 'setHookEnabled', 'saveHook', 'resetHook',
     'clearBirdLog', 'enableBirdLog', 'uploadUpdate', 'applyUpdate', 'rollbackUpdate', 'githubUpdate', 'saveDnsResolver', 'savePanelNet',
     'saveListsSources', 'saveRoutePrefs', 'saveBirdHook',
 ];
 
-function updateIsRunning() {
+function jobIsRunning() {
     $prefix = sys_get_temp_dir() . '/dns-router-';
     $job = json_decode((string)@file_get_contents($prefix . 'job.json'), true);
     if (!$job || $job['state'] !== 'running') return false;
@@ -1606,7 +1657,24 @@ function handleRequest() {
             return;
         }
 
-        if (in_array($action, UPDATE_BLOCKS, true) && updateIsRunning()) fail('An update is running: wait for it to finish', 409);
+        // While the panel files are being replaced old and new code would answer side by side
+        $maintenance = sys_get_temp_dir() . '/dns-router-maintenance';
+        if ($action !== 'state' && is_file($maintenance) && filemtime($maintenance) > time() - 120) fail('The panel is being updated: try again in a minute', 503);
+        if (in_array($action, UPDATE_BLOCKS, true) && jobIsRunning()) fail('An update is running: wait for it to finish', 409);
+
+        // Tests hold a php-fpm worker for seconds: at most two at a time, so the panel keeps answering
+        if (in_array($action, ['testRoute', 'testRouteCurl', 'testDnsResolver'], true)) {
+            $testLock = null;
+            foreach ([1, 2] as $slot) {
+                $h = fopen(sys_get_temp_dir() . '/dns-router-test' . $slot . '.lock', 'c');
+                if (flock($h, LOCK_EX | LOCK_NB)) {
+                    $testLock = $h;
+                    break;
+                }
+                fclose($h);
+            }
+            if (!$testLock) fail('Another test is running: wait for it to finish', 429);
+        }
 
         $handler = coreHandlers()[$action] ?? extHandlers()[$action] ?? null;
         if ($handler === null) fail('Unknown action');

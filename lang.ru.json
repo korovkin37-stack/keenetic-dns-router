@@ -1489,6 +1489,18 @@
 "The release on GitHub is not newer than this version": "Релиз на GitHub не новее установленной версии",
 "GitHub gave no checksum for the archive": "GitHub не отдал контрольную сумму архива",
 "The archive does not match the checksum from GitHub": "Архив не совпадает с контрольной суммой от GitHub",
-"{0} covers a large part of the Internet (0.0.0.0/0 is all of it). Add anyway?": "{0} покрывает большую часть интернета (0.0.0.0/0 — весь). Всё равно добавить?"
+"{0} covers a large part of the Internet (0.0.0.0/0 is all of it). Add anyway?": "{0} покрывает большую часть интернета (0.0.0.0/0 — весь). Всё равно добавить?",
+"Download failed: the file is larger than 20 MB": "Загрузка не удалась: файл больше 20 МБ",
+"A source cannot be the router itself": "Источником не может быть сам роутер",
+"Another test is running: wait for it to finish": "Уже идёт другой тест: дождитесь его окончания",
+"At most 100 policies are supported": "Поддерживается не больше 100 политик",
+"Target not found": "Цель не найдена",
+"Not resolved: over the limit": "Не разрешены: сверх лимита",
+"Only the first {0} of {1} domains are resolved: the rest are over the limit": "Разрешены только первые {0} из {1} доменов: остальные сверх лимита",
+"bird4.conf saved, bird accepted the syntax (backup: {0}). Restart bird to apply.": "bird4.conf сохранён, bird принял синтаксис (копия: {0}). Перезапустите bird, чтобы применить.",
+"bird4.conf saved without a syntax check: bird was not found (backup: {0}).": "bird4.conf сохранён без проверки синтаксиса: bird не найден (копия: {0}).",
+"bird rejected the config, nothing was saved: {0}": "bird не принял конфиг, ничего не сохранено: {0}",
+"bird was not found: syntax check skipped": "bird не найден: проверка синтаксиса пропущена",
+"The panel is being updated: try again in a minute": "Панель обновляется: повторите через минуту"
 }
 }

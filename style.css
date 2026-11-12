@@ -952,12 +952,17 @@ td {
     position: absolute;
     right: 18px;
     top: 14px;
+    padding: 0;
+    border: 0;
+    background: none;
+    font-family: inherit;
     font-size: 22px;
     cursor: pointer;
     color: var(--muted);
     line-height: 1;
 }
 .close:hover { color: var(--text); }
+body.modal-open { overflow: hidden; }
 
 @media (max-width: 600px) {
     /* Модалки на телефоне держали десктопный padding (26px) - на узком
@@ -2639,6 +2644,7 @@ th .info-tip { margin-left: 4px; vertical-align: middle; }
 .flow-row b { font-family: ui-monospace, monospace; font-weight: 500; }
 .flow-total { background: rgb(var(--accent-rgb) / .12); }
 .flow-total b { font-weight: 700; }
+.flow-row.warn { background: rgb(224 160 48 / .14); }
 
 /* 5.16.0: entries of a list */
 .ent-tabs { margin-bottom: 8px; }

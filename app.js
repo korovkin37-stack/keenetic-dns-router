@@ -1,7 +1,7 @@
 // app.js - клиентская логика
 
 const API = '/app.php';
-const JS_VERSION = '5.39.0'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.40.0'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -354,6 +354,50 @@ document.addEventListener('keydown', (e) => {
     const top = open[open.length - 1];
     const close = top.querySelector('.close');
     if (close) close.click(); else top.style.display = 'none';
+});
+
+// Windows: the page under an open window does not scroll, Tab stays inside the top window,
+// and focus goes back where it was when the window closes
+const modalStack = [];
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+function modalIsOpen(m) {
+    return m.isConnected && m.style.display !== '' && m.style.display !== 'none';
+}
+function modalFocusable(m) {
+    return [...m.querySelectorAll(FOCUSABLE)].filter(el => el.offsetParent !== null);
+}
+function modalSync() {
+    for (let i = modalStack.length - 1; i >= 0; i--) {
+        const entry = modalStack[i];
+        if (modalIsOpen(entry.modal)) continue;
+        modalStack.splice(i, 1);
+        const lost = document.activeElement === document.body || entry.modal.contains(document.activeElement);
+        if (entry.back && entry.back.isConnected && lost) entry.back.focus();
+    }
+    document.querySelectorAll('.modal').forEach(m => {
+        if (!modalIsOpen(m) || modalStack.some(entry => entry.modal === m)) return;
+        modalStack.push({ modal: m, back: document.activeElement });
+        // the opener may have put the focus into a field itself
+        if (m.contains(document.activeElement)) return;
+        // on a phone a focused text field would pop the keyboard up: the close button takes the focus there
+        const fields = modalFocusable(m);
+        const touch = matchMedia('(pointer: coarse)').matches;
+        const first = (!touch && fields.find(el => el.matches('input, select, textarea'))) || fields.find(el => el.classList.contains('close')) || fields[0];
+        if (first) first.focus({ preventScroll: true });
+    });
+    document.body.classList.toggle('modal-open', modalStack.length > 0);
+}
+new MutationObserver(modalSync).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['style'] });
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab' || !modalStack.length) return;
+    const top = modalStack[modalStack.length - 1].modal;
+    const fields = modalFocusable(top);
+    if (!fields.length) { e.preventDefault(); return; }
+    const first = fields[0];
+    const last = fields[fields.length - 1];
+    if (!top.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 });
 
 function showConfirm(message, confirmLabel = 'Confirm') {
@@ -1353,11 +1397,11 @@ document.getElementById('testRouteResult').addEventListener('click', (e) => {
     }
 });
 
-// curl through the interface of each found route: the first three at once, the others when their row is opened
+// curl through the interface of each found route: the first three one by one, the others when their row is opened
 async function runTestRouteCurl(target, route) {
     if (!route || !Array.isArray(route.results)) return;
     const jobs = route.results.filter(r => r.parsed && /^\d+\.\d+\.\d+\.\d+$/.test(r.ip)).slice(0, 3);
-    await Promise.all(jobs.map(r => testRouteCurlOne(target, r.ip, r.parsed.dev || '')));
+    for (const r of jobs) await testRouteCurlOne(target, r.ip, r.parsed.dev || '');
 }
 
 async function testRouteCurlOne(target, ip, dev) {
@@ -2641,7 +2685,7 @@ function renderBirdStats(s, running) {
     el.hidden = false;
 }
 
-// save() does not restart bird: it only returns the output of the init script's check (check_output);
+// save() checks the text with "bird -p" and does not restart bird:
 // the live BGP process re-reads the config only on the explicit "Restart bird" button.
 function openBirdConfigEditor() {
     openFileEditor({
@@ -2661,10 +2705,8 @@ function openBirdConfigEditor() {
             return await response.json();
         },
         onSaved: (result) => {
-            // "check" на этой сборке синтаксис реально не проверяет
-            // (дублирует status) - не выдаём его за настоящую валидацию,
-            // просто честно говорим "сохранено, проверьте сами".
-            showToast(`bird4.conf saved (backup: ${result.backup_file}).\nSyntax is not automatically validated - review the file yourself, then restart manually below to apply.`, 'warning', 12000);
+            if (result.checked) showToast(t('bird4.conf saved, bird accepted the syntax (backup: {0}). Restart bird to apply.', result.backup_file), 'success', 9000);
+            else showToast(t('bird4.conf saved without a syntax check: bird was not found (backup: {0}).', result.backup_file), 'warning', 12000);
         },
     });
 }
@@ -3630,7 +3672,9 @@ async function fetchConnections() {
     }
 
     try {
-        const result = await (await apiFetch(API + '?action=getClientConnections&ip=' + encodeURIComponent(currentConnIp))).json();
+        const ip = currentConnIp;
+        const result = await (await apiFetch(API + '?action=getClientConnections&ip=' + encodeURIComponent(ip))).json();
+        if (ip !== currentConnIp) return;
         if (!Array.isArray(result.connections)) {
             statusEl.textContent = result.error || 'Failed to load';
             currentConnections = [];
@@ -3796,6 +3840,7 @@ function quickAddTarget(ip, policyName) {
 // отдельный запрос по требованию, не входит в основной список Clients.
 // Самое ценное - device (SSDP/UPnP: производитель/модель), которого нет
 // в общем списке.
+let clientDetailSeq = 0;
 async function openClientDetail(mac, label, ip = '') {
     const modal = document.getElementById('clientDetailModal');
     const titleEl = document.getElementById('clientDetailTitle');
@@ -3812,7 +3857,10 @@ async function openClientDetail(mac, label, ip = '') {
     renderClientManage(mac);
 
     try {
+        const seq = ++clientDetailSeq;
         const info = await (await apiFetch(API + '?action=getClientDetail&mac=' + encodeURIComponent(mac))).json();
+        // another client was opened while this answer was on its way
+        if (seq !== clientDetailSeq || modal.style.display !== 'block') return;
         if (info.error) {
             listEl.innerHTML = `<div class="route-line-item muted">${escapeHtml(info.error)}</div>`;
             return;
@@ -4303,7 +4351,9 @@ async function fetchInterfaceStat() {
     const statEl = document.getElementById('interfaceDetailStat');
 
     try {
-        const stat = await (await apiFetch(API + '?action=getInterfaceStat&name=' + encodeURIComponent(currentInterfaceId))).json();
+        const id = currentInterfaceId;
+        const stat = await (await apiFetch(API + '?action=getInterfaceStat&name=' + encodeURIComponent(id))).json();
+        if (id !== currentInterfaceId) return;
         statEl.innerHTML = buildInterfaceStatBlock(stat);
     } catch (error) {
         statEl.innerHTML = `<div class="route-line-item muted">Traffic stats unavailable: ${escapeHtml(error.message)}</div>`;
@@ -5106,11 +5156,13 @@ function listFlow(r) {
     if (s.mode === 'resolve') {
         html += row(t('Domains in the source'), s.domains);
         html += row(t('Domains that got an answer'), t('{0} of {1}', s.answered, s.asked));
+        if (s.domains > s.asked) html += row(t('Not resolved: over the limit'), s.domains - s.asked, 'warn');
         html += row(t('Addresses obtained'), s.entries);
     } else if (s.mode === 'both') {
         html += row(t('Networks from the source'), s.cidrs);
         html += row(t('Single addresses from the source'), s.addresses);
         html += row(t('Domains that got an answer'), t('{0} of {1}', s.answered, s.asked));
+        if (s.domains > s.asked) html += row(t('Not resolved: over the limit'), s.domains - s.asked, 'warn');
         html += row(t('Addresses obtained'), s.resolved_ips);
         html += row(t('Different entries'), s.entries);
     } else {
@@ -5439,6 +5491,7 @@ function listResultHtml(r, applied, saved) {
     if (saved) row('ok', t('Settings saved'));
     const s = r.stats ? JSON.parse(r.stats) : null;
     if (r.status === 'ok' && s) {
+        if (s.mode !== 'networks' && s.domains > s.asked) row('warn', t('Only the first {0} of {1} domains are resolved: the rest are over the limit', s.asked, s.domains));
         if (s.mode === 'resolve') row('ok', t('Resolved {0} of {1} domains of the source: {2} addresses', s.answered, s.asked, s.entries));
         else if (s.mode === 'both') {
             row('ok', t('Resolved {0} of {1} domains of the source: {2} addresses', s.answered, s.asked, s.resolved_ips));
@@ -5487,6 +5540,7 @@ async function openList(id, fresh) {
     listId = id;
     if (fresh) listAwait = null;
     const r = await (await apiFetch(API + '?action=getListDetail&id=' + id)).json();
+    if (id !== listId) return;
     if (!fresh && document.getElementById('listModal').style.display !== 'block') return;
     if (r.error) { showToast(t(r.error), 'error'); return; }
     const diff = r.diff ? JSON.parse(r.diff) : null;

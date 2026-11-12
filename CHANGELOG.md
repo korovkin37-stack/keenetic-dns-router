@@ -2,6 +2,22 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.40.0
+The second round of the audit.
+- Routes are applied without a gap: new routes are written over the old ones, then the stale ones are removed; the tables are never emptied, so traffic of a target keeps its route the whole time. Two root calls instead of dozens.
+- bird4.conf is checked with `bird -p` before saving; a config bird rejects is not written. Turning on the bird log no longer mistakes "No syntax errors" for an error.
+- DPI runs are kept in the database instead of the `dpi/` folder (old runs move over by themselves).
+- Downloads (lists, GitHub): at most 20 MB, http(s) only, redirects only to https; a list source cannot point to the router itself.
+- Policy marks from Keenetic are taken only as plain hex before they reach `ip rule` and the bird hook.
+- At most 100 policies (the lists table sits 100 above the policy's own one).
+- Import of targets is one transaction: all or nothing, and much faster.
+- Editing, deleting and refreshing a target that no longer exists says so; `enabled` is read as a boolean.
+- A list with more than 1000 domains says that the rest were not resolved; lists are read line by line.
+- At most 8 DNS servers in the DNS test, at most two tests at a time; route test curl runs one by one.
+- While the panel files are being replaced other requests wait (503) instead of meeting old and new code side by side.
+- Windows: Tab stays inside the window, the page under it does not scroll, focus returns after closing; the close cross is a button.
+- Detail windows ignore late answers to an earlier request.
+
 ## 5.39.0
 Security hardening after an audit.
 - No inline click handlers in the panel any more; a Content-Security-Policy forbids foreign scripts.

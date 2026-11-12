@@ -77,7 +77,7 @@
                 <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h10a4 4 0 0 1 0 8H8"></path><path d="M7 5L4 8l3 3"></path></svg></span>
                 <div class="brand-text">
                     <h1>Keenetic DNS Router</h1>
-                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.39.0</button>
+                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.40.0</button>
                 </div>
             </div>
             <nav class="tabs" id="mainNav" aria-label="Sections">
@@ -570,7 +570,7 @@ Custom: one per line, for this run only.">i</span></span>
         <div class="modal-content target-content">
             <div class="modal-head">
                 <h2 id="targetTitle">Target</h2>
-                <span class="close" id="targetClose">&times;</span>
+                <button type="button" class="close" id="targetClose" aria-label="Close">&times;</button>
             </div>
             <div class="modal-tabs" id="targetTabs">
                 <div class="seg" role="tablist">
@@ -655,7 +655,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
         <div class="modal-content target-content upd-content">
             <div class="modal-head">
                 <h2>Panel update</h2>
-                <span class="close" id="updateClose">&times;</span>
+                <button type="button" class="close" id="updateClose" aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="upd-grid">
@@ -698,7 +698,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
         <div class="modal-content target-content">
             <div class="modal-head">
                 <h2>Tasks</h2>
-                <span class="close" id="jobClose">&times;</span>
+                <button type="button" class="close" id="jobClose" aria-label="Close">&times;</button>
             </div>
             <div class="task-toolbar">
                 <button type="button" class="btn btn-small btn-primary" id="jobNewBtn" aria-expanded="false">+ New task <span class="task-caret">▾</span></button>
@@ -718,7 +718,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
         <div class="modal-content target-content dpi-lists-content">
             <div class="modal-head">
                 <h2>DPI check lists</h2>
-                <span class="close" id="dpiListsClose">&times;</span>
+                <button type="button" class="close" id="dpiListsClose" aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="seg dpi-lists-seg" id="dpiListsSeg">
@@ -765,7 +765,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
         <div class="modal-content target-content">
             <div class="modal-head">
                 <h2>What the header buttons do</h2>
-                <span class="close" id="helpClose">&times;</span>
+                <button type="button" class="close" id="helpClose" aria-label="Close">&times;</button>
             </div>
             <div class="modal-body help-body">
                 <div class="help-item">
@@ -800,7 +800,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
         <div class="modal-content target-content">
             <div class="modal-head">
                 <h2>List sources</h2>
-                <span class="close" id="sourcesClose">&times;</span>
+                <button type="button" class="close" id="sourcesClose" aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
                 <p class="card-note">Sites the lists are downloaded from. A source must have the same interface as iplist.opencck.org. The first one is used by default.</p>
@@ -817,7 +817,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
         <div class="modal-content target-content">
             <div class="modal-head">
                 <h2>Add lists</h2>
-                <span class="close" id="listCatalogClose">&times;</span>
+                <button type="button" class="close" id="listCatalogClose" aria-label="Close">&times;</button>
             </div>
             <div class="catalog-steps" id="catalogSteps">
                 <span class="catalog-step active" data-step="1"><b>1</b> Choose lists</span>
@@ -882,7 +882,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
         <div class="modal-content target-content">
             <div class="modal-head">
                 <h2 id="listTitle">List</h2>
-                <span class="close" id="listClose">&times;</span>
+                <button type="button" class="close" id="listClose" aria-label="Close">&times;</button>
             </div>
             <div class="modal-tabs">
                 <div class="seg" id="listTabs" role="tablist">
@@ -941,7 +941,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
 
     <div id="tableViewModal" class="modal">
         <div class="modal-content table-view-content">
-            <span class="close" id="tableViewClose">&times;</span>
+            <button type="button" class="close" id="tableViewClose" aria-label="Close">&times;</button>
             <h2 id="tableViewTitle">Routes</h2>
             <input type="text" id="tableViewFilter" placeholder="Filter (searches on the router, not just what's loaded)...">
             <div id="tableViewList" class="table-view-list"></div>
@@ -952,7 +952,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
     <!-- bird4.conf wizard -->
     <div id="birdWizardModal" class="modal">
         <div class="modal-content bw-content">
-            <span class="close" id="birdWizardClose">&times;</span>
+            <button type="button" class="close" id="birdWizardClose" aria-label="Close">&times;</button>
             <h2>bird4.conf wizard</h2>
             <div id="birdWizardNote" class="status-banner" hidden></div>
             <div class="bw-grid">
@@ -1060,7 +1060,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
     <!-- bird log -->
     <div id="birdLogModal" class="modal">
         <div class="modal-content table-view-content bw-content bl-content">
-            <span class="close" id="birdLogClose">&times;</span>
+            <button type="button" class="close" id="birdLogClose" aria-label="Close">&times;</button>
             <h2>bird log</h2>
             <div class="bl-toolbar">
                 <button class="btn btn-small" id="birdLogRefresh">↻ Refresh</button>
@@ -1081,7 +1081,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
     <!-- Generic file editor modal (bird4.conf) -->
     <div id="fileEditorModal" class="modal">
         <div class="modal-content table-view-content">
-            <span class="close" id="fileEditorClose">&times;</span>
+            <button type="button" class="close" id="fileEditorClose" aria-label="Close">&times;</button>
             <h2 id="fileEditorTitle">Edit file</h2>
             <div id="fileEditorPath" class="cell-mono muted file-editor-path"></div>
             <textarea id="fileEditorTextarea" class="file-editor-text" spellcheck="false" autocapitalize="off" wrap="off"></textarea>
@@ -1103,7 +1103,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
          этой политики (multi-WAN, floating-маршруты VPN и т.п.). -->
     <div id="policyRoutesModal" class="modal">
         <div class="modal-content table-view-content">
-            <span class="close" id="policyRoutesClose">&times;</span>
+            <button type="button" class="close" id="policyRoutesClose" aria-label="Close">&times;</button>
             <h2 id="policyRoutesTitle">Policy routes</h2>
             <div id="policyRoutesList" class="table-view-list"></div>
         </div>
@@ -1115,7 +1115,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
         <div class="modal-content target-content">
             <div class="modal-head">
                 <h2>Add routes</h2>
-                <span class="close" id="staticRouteClose">&times;</span>
+                <button type="button" class="close" id="staticRouteClose" aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="form-group">
@@ -1150,7 +1150,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
         <div class="modal-content target-content">
             <div class="modal-head">
                 <h2 id="rciTitle">Request to the router</h2>
-                <span class="close" id="rciClose">&times;</span>
+                <button type="button" class="close" id="rciClose" aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
                 <p class="card-note" id="rciNote"></p>
@@ -1164,7 +1164,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
 
     <div id="interfaceDetailModal" class="modal">
         <div class="modal-content table-view-content">
-            <span class="close" id="interfaceDetailClose">&times;</span>
+            <button type="button" class="close" id="interfaceDetailClose" aria-label="Close">&times;</button>
             <h2 id="interfaceDetailTitle">Interface details</h2>
             <div id="interfaceControl" class="if-control" hidden>
                 <div class="if-control-row">
@@ -1204,7 +1204,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
          данные (модель устройства не меняется каждые 10 секунд). -->
     <div id="clientDetailModal" class="modal">
         <div class="modal-content table-view-content">
-            <span class="close" id="clientDetailClose">&times;</span>
+            <button type="button" class="close" id="clientDetailClose" aria-label="Close">&times;</button>
             <h2 id="clientDetailTitle">Client details</h2>
             <section id="clientManage" class="client-manage" hidden>
                 <h3>Manage</h3>

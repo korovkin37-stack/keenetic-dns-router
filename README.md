@@ -64,12 +64,6 @@ php-cli app.php passwd P  change the panel password
 
 Interface strings are written in English; a translation is `lang.<code>.json` next to `index.html`: the key is the English text, `{0}`, `{1}` are the values put in. A new language can be added to an update archive and shows up in the list by itself. See `lang.ru.json`.
 
-## Screenshots
-![Targets](docs/screenshots/targets.png)
-![Lists](docs/screenshots/lists.png)
-![Routing tables](docs/screenshots/routing_tables.png)
-![Diagnostics](docs/screenshots/diagnostics.png)
-
 ## Releases
 
 A tag `vX.Y.Z` builds the release: the version must match `APP_VERSION` in `app.php` and `index.html`, and `CHANGELOG.md` must have a `## X.Y.Z` section; the release text is taken from `CHANGELOG.md` and `CHANGELOG.ru.md`.
