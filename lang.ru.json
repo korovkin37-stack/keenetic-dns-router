@@ -1481,6 +1481,14 @@
 "$bird_config_file is not set in config.php": "В config.php не задан $bird_config_file",
 "$bird_init_script is not set in config.php": "В config.php не задан $bird_init_script",
 "opkg could not install curl: {0}": "opkg не смог установить curl: {0}",
-"Hello {0}": "Привет, {0}"
+"Hello {0}": "Привет, {0}",
+"Too many wrong passwords: try again in a few minutes": "Слишком много неверных паролей: попробуйте через несколько минут",
+"This action needs POST": "Это действие требует POST-запроса",
+"This action needs a JSON body": "Это действие требует JSON в теле запроса",
+"Keenetic returned no policies: nothing was changed": "Keenetic вернул пустой список политик: ничего не изменено",
+"The release on GitHub is not newer than this version": "Релиз на GitHub не новее установленной версии",
+"GitHub gave no checksum for the archive": "GitHub не отдал контрольную сумму архива",
+"The archive does not match the checksum from GitHub": "Архив не совпадает с контрольной суммой от GitHub",
+"{0} covers a large part of the Internet (0.0.0.0/0 is all of it). Add anyway?": "{0} покрывает большую часть интернета (0.0.0.0/0 — весь). Всё равно добавить?"
 }
 }

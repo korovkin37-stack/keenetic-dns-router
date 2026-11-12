@@ -1,5 +1,5 @@
 <?php
-const APP_VERSION = '5.38.1';
+const APP_VERSION = '5.39.0';
 const COOKIE_NAME = 'krdns_auth';
 const COOKIE_TTL = 604800;
 
@@ -14,6 +14,9 @@ set_error_handler(function ($no, $msg, $file, $line) {
     $GLOBALS['caught'][] = sprintf('%s in %s:%d', $msg, basename($file), $line);
     return false;
 });
+
+// RCI and other HTTP reads must not hang a request for a minute
+ini_set('default_socket_timeout', '15');
 
 // ============================================ CONFIG ============================================
 $db_file = __DIR__ . '/routes.db';
@@ -79,11 +82,24 @@ function checkAuthCookie() {
 
 function doLogin($in) {
     global $auth_user, $auth_pass_hash;
+    // 5 wrong passwords from one address lock it out for 5 minutes
+    $file = sys_get_temp_dir() . '/dns-router-login.json';
+    $ip = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+    $fails = json_decode((string)@file_get_contents($file), true) ?: [];
+    $fails = array_filter($fails, fn($f) => $f['until'] > time() || $f['last'] > time() - 300);
+    if (($fails[$ip]['until'] ?? 0) > time()) {
+        fail('Too many wrong passwords: try again in a few minutes', 429);
+    }
     $user = trim((string)($in['username'] ?? ''));
     if (hash_equals($auth_user, $user) && password_verify((string)($in['password'] ?? ''), $auth_pass_hash)) {
+        unset($fails[$ip]);
+        @file_put_contents($file, json_encode($fails), LOCK_EX);
         issueAuthCookie($user);
         return ['success' => true];
     }
+    $count = ($fails[$ip]['count'] ?? 0) + 1;
+    $fails[$ip] = ['count' => $count >= 5 ? 0 : $count, 'last' => time(), 'until' => $count >= 5 ? time() + 300 : 0];
+    @file_put_contents($file, json_encode($fails), LOCK_EX);
     usleep(500000);
     return ['success' => false, 'error' => 'Invalid username or password'];
 }
@@ -172,7 +188,14 @@ function suExec($shell, $password = null) {
     if (isRoot()) {
         $out = shell_exec($shell . ' 2>&1');
     } else {
-        $out = shell_exec('echo ' . escapeshellarg($password ?? $passwd) . ' | /opt/bin/su -c ' . escapeshellarg($shell) . ' 2>&1');
+        // The password goes to su through stdin: it never shows up in the process list
+        $proc = proc_open(['/opt/bin/su', '-c', $shell], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes);
+        if (!is_resource($proc)) return '';
+        fwrite($pipes[0], ($password ?? $passwd) . "\n");
+        fclose($pipes[0]);
+        $out = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        proc_close($proc);
     }
     // su prints its "Password:" prompt into the merged stream
     return preg_replace('/^Password:[ \t]*\r?\n?/', '', (string)$out);
@@ -579,6 +602,10 @@ function doSyncPolicies(SQLite3 $db) {
     $result = $db->query("SELECT id, name, our_table, mark_hex FROM policies WHERE name != 'DELETED'");
     while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
         $db_policies[$row['name']] = $row;
+    }
+    // An empty answer is a hiccup of RCI far more often than the removal of every policy
+    if (!$keenetic_policies && $db_policies) {
+        return ['success' => false, 'error' => 'Keenetic returned no policies: nothing was changed'];
     }
 
     $deleted_id = $db->querySingle("SELECT id FROM policies WHERE name = 'DELETED'");
@@ -1544,9 +1571,27 @@ function handleRequest() {
         }
     });
 
+    header('X-Content-Type-Options: nosniff');
+    header('X-Frame-Options: DENY');
+
     $body = json_decode((string)file_get_contents('php://input'), true);
     $in = $_GET + (is_array($body) ? $body : []);
     $action = (string)($in['action'] ?? '');
+
+    // Anything that changes the router comes only as a JSON POST: a foreign page can send neither without a CORS preflight
+    $readOnly = str_starts_with($action, 'get') || in_array($action, ['state', 'setupCheck', 'checkGithubUpdate', 'exportConfig', 'testRoute'], true);
+    if (!$readOnly) {
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            http_response_code(405);
+            respond(['error' => 'This action needs POST']);
+            return;
+        }
+        if (stripos((string)($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json') !== 0) {
+            http_response_code(415);
+            respond(['error' => 'This action needs a JSON body']);
+            return;
+        }
+    }
     $state = appState();
 
     try {

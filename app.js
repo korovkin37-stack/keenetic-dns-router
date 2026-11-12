@@ -1,7 +1,7 @@
 // app.js - клиентская логика
 
 const API = '/app.php';
-const JS_VERSION = '5.20.41'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.39.0'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -713,7 +713,7 @@ function initApp() {
     });
     document.getElementById('logoutBtn').addEventListener('click', async (e) => {
         e.preventDefault();
-        await fetch(API + '?action=logout');
+        await postJson({ action: 'logout' });
         location.reload();
     });
 
@@ -826,7 +826,7 @@ function sortValue(d, key) {
         case 'target': return d.domain;
         case 'interface': return d.interface;
         case 'gateway': return d.gateway;
-        case 'current_ip':
+        case 'current_ip': return ipSortValue(d.current_ip);
         case 'last_check': { const t = toLocalDate(d.last_check); return t ? t.getTime() : null; }
         case 'status': return { 'Active': 0, 'Not resolved': 1, 'Disabled': 2 }[domainStatus(d).label];
     }
@@ -870,6 +870,17 @@ function updateSortHeaders() {
     });
 }
 
+// "1.2.3.4" sorts by its number; several addresses (JSON list) by the first; a target without an address goes last
+function ipSortValue(value) {
+    let first = String(value || '');
+    if (first.startsWith('[')) {
+        try { first = JSON.parse(first)[0] || ''; } catch (e) { first = ''; }
+    }
+    const m = first.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)/);
+    if (!m) return null;
+    return ((+m[1] * 256 + +m[2]) * 256 + +m[3]) * 256 + +m[4];
+}
+
 function renderDomains(filterText = '') {
     let tbody = document.getElementById('domainsList');
     let domains = state.domains;
@@ -887,7 +898,7 @@ function renderDomains(filterText = '') {
         return;
     }
     updateSortHeaders();
-    tbody.innerHTML = "";
+    let html = '';
     const isSearching = !!filterText; // во время поиска игнорируем "свёрнуто" - иначе результат может просто не показаться
     policies.forEach(policie => {
         const policie_domains = sortDomains(domains.filter(domain => domain.policy_name == policie.name));
@@ -898,7 +909,7 @@ function renderDomains(filterText = '') {
             <td colspan="7">
                 <div class="policy-group-row">
                     <div class="policy-group-left">
-                        <button class="policy-toggle" onclick="togglePolicyCollapse(${policie.id})" title="${isCollapsed ? 'Expand' : 'Collapse'}">${isCollapsed ? '▸' : '▾'}</button><span class="policy-dot"></span><span class="policy-name" onclick="togglePolicyCollapse(${policie.id})">${escapeHtml(policie.name)}</span>${policie.description ? `<span class="policy-desc">${escapeHtml(policie.description)}</span>` : ''}
+                        <button class="policy-toggle" data-click="togglePolicy" data-id="${policie.id}" title="${isCollapsed ? 'Expand' : 'Collapse'}">${isCollapsed ? '▸' : '▾'}</button><span class="policy-dot"></span><span class="policy-name" data-click="togglePolicy" data-id="${policie.id}" data-notr>${escapeHtml(policie.name)}</span>${policie.description ? `<span class="policy-desc" data-notr>${escapeHtml(policie.description)}</span>` : ''}
                     </div>
                     <div class="policy-meta">
                         <span class="meta-mark">mark <code>${escapeHtml(policie.mark_hex)}</code></span>
@@ -908,7 +919,7 @@ function renderDomains(filterText = '') {
                 </div>
             </td>
         </tr>`;
-        tbody.innerHTML += groupHtml;
+        html += groupHtml;
 
         if (isCollapsed) return;
 
@@ -917,23 +928,24 @@ function renderDomains(filterText = '') {
                 const status = domainStatus(domain);
                 const lastCheckDate = toLocalDate(domain.last_check);
                 const rowHtml = `<tr class="domain-row">
-                    <td class="cell-domain" data-label="Target" data-col="target"><button type="button" class="target-link" onclick="openTargetDetail(${domain.id})" title="Target details">${escapeHtml(domain.domain)}</button></td>
+                    <td class="cell-domain" data-label="Target" data-col="target"><button type="button" class="target-link" data-click="openTarget" data-id="${domain.id}" title="Target details" data-notr>${escapeHtml(domain.domain)}</button></td>
                     <td class="cell-mono" data-label="Interface" data-col="interface">${escapeHtml(domain.interface) || '<span class="muted">—</span>'}</td>
                     <td class="cell-mono" data-label="Gateway" data-col="gateway">${escapeHtml(domain.gateway) || '<span class="muted">—</span>'}</td>
                     <td data-label="Current IP" data-col="current-ip">${ipChips(domain.current_ip)}</td>
                     <td class="cell-mono" data-label="Last check" data-col="last-check">${lastCheckDate ? `<span title="${escapeHtml(i18nDate(lastCheckDate))}">${timeAgo(domain.last_check)}</span>` : '<span class="muted">—</span>'}</td>
                     <td data-label="Status" data-col="status"><span class="status-pill"><span class="led ${status.cls}" title="${status.label}"></span><span class="status-label">${status.label}</span></span></td>
                     <td class="cell-actions col-sticky-right">
-                        <button class="btn btn-small" onclick="openTargetDetail(${domain.id})">Details</button>
-                        <button class="icon-btn icon-btn-danger" onclick="deleteDomain(${domain.id})" title="Delete">✕</button>
+                        <button class="btn btn-small" data-click="openTarget" data-id="${domain.id}">Details</button>
+                        <button class="icon-btn icon-btn-danger" data-click="deleteDomain" data-id="${domain.id}" title="Delete">✕</button>
                     </td>
                 </tr>`;
-                tbody.innerHTML += rowHtml;
+                html += rowHtml;
             });
         } else {
-            tbody.innerHTML += `<tr><td colspan="7" class="loading">No domains in this policy</td></tr>`;
+            html += `<tr><td colspan="7" class="loading">No domains in this policy</td></tr>`;
         }
-    })
+    });
+    tbody.innerHTML = html;
 }
 
 function togglePolicyCollapse(policyId) {
@@ -965,7 +977,7 @@ function renderPolicies(filterText = '') {
         tbody.innerHTML = '<tr><td colspan="12" class="loading">No policies found</td></tr>';
         return;
     }
-    tbody.innerHTML = "";
+    let html = '';
     policies.forEach(policie => {
         const domainsCount = state.domains.filter(domains => {
             return domains.policy_id === policie.id
@@ -974,9 +986,9 @@ function renderPolicies(filterText = '') {
         const listsCount = policyLists.length;
         const listsRoutes = policyLists.reduce((sum, l) => sum + (l.enabled ? l.n_items : 0), 0);
         const updated = toLocalDate(policie.updated_at);
-        tbody.innerHTML += `<tr style="--policy-hue:${policyHue(policie.id)}">
-            <td class="cell-policy-name" data-label="Name" data-col="name"><span class="policy-dot"></span><strong class="mono">${escapeHtml(policie.name)}</strong></td>
-            <td data-label="Description" data-col="description">${escapeHtml(policie.description) || '<span class="muted">—</span>'}</td>
+        html += `<tr style="--policy-hue:${policyHue(policie.id)}">
+            <td class="cell-policy-name" data-label="Name" data-col="name"><span class="policy-dot"></span><strong class="mono" data-notr>${escapeHtml(policie.name)}</strong></td>
+            <td data-label="Description" data-col="description"${policie.description ? ' data-notr' : ''}>${escapeHtml(policie.description) || '<span class="muted">—</span>'}</td>
             <td data-label="Mark" data-col="mark"><code class="chip chip-mono">${escapeHtml(policie.mark_hex)}</code></td>
             <td class="cell-mono" data-label="Our table" data-col="our-table">${escapeHtml(policie.our_table)}</td>
             <td class="cell-mono" data-label="Keenetic table" data-col="keenetic-table">${escapeHtml(policie.keenetic_table) || '<span class="muted">—</span>'}</td>
@@ -987,10 +999,11 @@ function renderPolicies(filterText = '') {
             <td class="cell-mono" data-label="Gateway" data-col="gateway" id="policy-gateway-${policie.id}"><span class="muted">…</span></td>
             <td data-label="Updated" data-col="updated">${updated ? escapeHtml(i18nDate(updated)) : '-'}</td>
             <td class="cell-actions col-sticky-right" data-label="Actions" data-col="actions">
-                <button class="icon-btn" onclick="openPolicyRoutes('${escapeHtml(policie.name.replace(/'/g, "\\'"))}')" title="View all routes">☰</button>
+                <button class="icon-btn" data-click="policyRoutes" data-name="${escapeHtml(policie.name)}" title="View all routes">☰</button>
             </td>
         </tr>`;
-    })
+    });
+    tbody.innerHTML = html;
 }
 // ============================================ РЕНДЕРИНГ ТАБЛИЦ ============================================
 // ============================================ ТАБЛИЦЫ МАРШРУТИЗАЦИИ (live) ============================================
@@ -1069,8 +1082,8 @@ function renderRoutingTables(tables) {
             <td class="cell-mono col-sticky-right" data-label="Routes" data-col="routes">
                 <div class="routes-cell">
                     <span class="routes-value muted">…</span>
-                    <button class="icon-btn routes-refresh" onclick="loadTableRouteCount('${refAttr}')" title="Refresh route count for this table only">↻</button>
-                    <button class="icon-btn routes-view" onclick="openTableView('${refAttr}')" title="View routes in this table">👁</button>
+                    <button class="icon-btn routes-refresh" data-click="tableCount" data-ref="${refAttr}" title="Refresh route count for this table only">↻</button>
+                    <button class="icon-btn routes-view" data-click="tableView" data-ref="${refAttr}" title="View routes in this table">👁</button>
                 </div>
             </td>
         </tr>`;
@@ -1767,7 +1780,7 @@ async function syncPolicies() {
     
     try {
         showLoading('Syncing policies with Keenetic…');
-        let result = await (await apiFetch(API+"?action=syncPolicies")).json();
+        let result = await api({ action: 'syncPolicies' });
         if (result.success) {
             loadData();
             refreshBirdPolicyOptions();
@@ -3311,7 +3324,7 @@ function initBirdWizard() {
 async function installCurl() {
     try {
         showLoading('Installing curl…');
-        const result = await (await apiFetch(API + '?action=installCurl')).json();
+        const result = await api({ action: 'installCurl' });
         if (result.success) showToast('curl installed', 'success');
         else showToast(t(result.error || 'Failed to install curl'), 'error', 9000);
     } catch (error) {
@@ -3325,7 +3338,7 @@ async function installCurl() {
 async function installPhpModule(action, name) {
     try {
         showLoading(t('Installing the PHP module {0}…', name));
-        const result = await (await apiFetch(API + '?action=' + action)).json();
+        const result = await api({ action });
         if (result.success) showToast(t('The PHP module {0} is installed; php-fpm restarts in a moment', name), 'success', 7000);
         else showToast(t(result.error || 'Install failed'), 'error', 9000);
     } catch (error) {
@@ -3344,10 +3357,10 @@ function renderCheckChips(el, checks) {
         const led = c.ok === true ? 'led-green' : (c.ok === null ? 'led-grey' : (c.level === 'optional' ? 'led-amber' : 'led-red'));
         const cls = c.ok === false ? (c.level === 'optional' ? ' opt' : ' bad') : '';
         let action = '';
-        if (c.ok === false && c.action === 'installHooks') action = '<button type="button" class="btn btn-small btn-primary" onclick="installHooks()">Install hooks</button>';
-        if (c.ok === false && c.action === 'installCurl') action = '<button type="button" class="btn btn-small btn-primary" onclick="installCurl()">Install curl</button>';
-        if (c.ok === false && c.action === 'installOpenssl') action = '<button type="button" class="btn btn-small btn-primary" onclick="installPhpModule(\'installOpenssl\', \'OpenSSL\')">Install</button>';
-        if (c.ok === false && c.action === 'installSockets') action = '<button type="button" class="btn btn-small btn-primary" onclick="installPhpModule(\'installSockets\', \'sockets\')">Install</button>';
+        if (c.ok === false && c.action === 'installHooks') action = '<button type="button" class="btn btn-small btn-primary" data-click="installHooks">Install hooks</button>';
+        if (c.ok === false && c.action === 'installCurl') action = '<button type="button" class="btn btn-small btn-primary" data-click="installCurl">Install curl</button>';
+        if (c.ok === false && c.action === 'installOpenssl') action = '<button type="button" class="btn btn-small btn-primary" data-click="installPhp" data-action="installOpenssl" data-name="OpenSSL">Install</button>';
+        if (c.ok === false && c.action === 'installSockets') action = '<button type="button" class="btn btn-small btn-primary" data-click="installPhp" data-action="installSockets" data-name="sockets">Install</button>';
         if (c.ok === false && c.fix && c.fix.length) {
             fixes += `<div class="chk-fix"><span>${escapeHtml(c.label)}</span>` + c.fix.map((cmd, k) => `<div class="check-fix-row"><code>${escapeHtml(cmd)}</code><button type="button" class="btn btn-small" data-copy="${i}:${k}">Copy</button></div>`).join('') + '</div>';
         }
@@ -3382,7 +3395,7 @@ async function loadDependencyStatus() {
 async function installHooks() {
     try {
         showLoading('Installing ndm hooks…');
-        const result = await (await apiFetch(API + '?action=installHooks')).json();
+        const result = await api({ action: 'installHooks' });
         if (result.success) {
             showToast('ndm hooks installed', 'success');
         } else {
@@ -3540,15 +3553,15 @@ function renderClients(filterText = '') {
 
         return `<tr class="domain-row">
             <td data-label="Status" data-col="status"><span class="status-pill"><span class="led ${statusLed}"></span><span class="status-label">${statusText}</span></span></td>
-            <td class="cell-domain" data-label="Name" data-col="name">${escapeHtml(c.name || '(no name)')}${c.registered ? '' : ` <span class="chip chip-warn">${escapeHtml(t('Not registered'))}</span>`}</td>
+            <td class="cell-domain" data-label="Name" data-col="name"><span data-notr>${escapeHtml(c.name || '(no name)')}</span>${c.registered ? '' : ` <span class="chip chip-warn">${escapeHtml(t('Not registered'))}</span>`}</td>
             <td class="cell-mono" data-label="IP" data-col="ip">${hasIp ? escapeHtml(c.ip) : '<span class="muted">-</span>'}</td>
             <td class="cell-mono" data-label="MAC" data-col="mac">${escapeHtml(c.mac)}</td>
-            <td data-label="Policy" data-col="policy">${c.policy ? `<span class="chip">${escapeHtml(c.policy)}</span>` : '<span class="muted">-</span>'}</td>
+            <td data-label="Policy" data-col="policy">${c.policy ? `<span class="chip" data-notr>${escapeHtml(c.policy)}</span>` : '<span class="muted">-</span>'}</td>
             <td class="cell-mono" data-label="Uptime" data-col="uptime">${c.online ? formatUptime(c.uptime) : '<span class="muted">-</span>'}</td>
             <td class="cell-mono" data-label="Down / Up" data-col="down-up"><span class="traffic-rx">↓ ${formatBytes(c.rxbytes)}</span> / <span class="traffic-tx">↑ ${formatBytes(c.txbytes)}</span></td>
             <td data-label="Connection" data-col="connection">${c.online ? `<span class="conn">${connIcon}<span class="conn-text"><span class="conn-type">${connType}</span>${c.via ? '<span class="conn-via">' + escapeHtml(t('via {0}', c.via)) + '</span>' : ''}${speed ? '<span class="conn-speed">' + escapeHtml(speed) + '</span>' : ''}</span></span>` : '<span class="muted">-</span>'}</td>
             <td class="cell-actions col-sticky-right" data-label="Actions" data-col="actions">
-                <button class="btn btn-small" onclick="openClientDetail('${escapeHtml(c.mac.replace(/'/g, "\\'"))}', '${escapeHtml((c.name || c.mac).replace(/'/g, "\\'"))}', '${hasIp ? escapeHtml(c.ip) : ''}')">Details</button>
+                <button class="btn btn-small" data-click="clientDetail" data-mac="${escapeHtml(c.mac)}" data-label="${escapeHtml(c.name || c.mac)}" data-ip="${hasIp ? escapeHtml(c.ip) : ''}">Details</button>
             </td>
         </tr>`;
     }
@@ -3717,9 +3730,7 @@ function renderConnections() {
         if (!c.managed) {
             // Уже отслеживаемые цели незачем предлагать добавить снова -
             // кнопка только для того, чего ещё нет в базе.
-            const ipEsc = escapeHtml(c.dst);
-            const policyEsc = escapeHtml((c.policy || '').replace(/'/g, "\\'"));
-            detailParts.push(`<button type="button" class="btn btn-small conn-quick-add" onclick="quickAddTarget('${ipEsc}', '${policyEsc}')">+ Add as target</button>`);
+            detailParts.push(`<button type="button" class="btn btn-small conn-quick-add" data-click="quickAdd" data-ip="${escapeHtml(c.dst)}" data-policy="${escapeHtml(c.policy || '')}">+ Add as target</button>`);
         }
 
         const detail = detailParts.length
@@ -4167,8 +4178,7 @@ function renderInterfaces(filterText = '') {
         const tags = [`<span class="if-tag" data-notr>${escapeHtml(i.type)}</span>`];
         if (i.defaultgw) tags.push('<span class="if-tag if-tag-gw">Default gateway</span>');
         if (birdTunnelId && (i.id === birdTunnelId || i.name === birdTunnelId)) tags.push('<span class="if-tag if-tag-bgp">BGP tunnel</span>');
-        const idAttr = escapeHtml(i.id.replace(/'/g, "\\'"));
-        return `<article class="if-card${isUp(i) ? '' : ' is-down'}" tabindex="0" role="button" onclick="openInterfaceDetail('${idAttr}')" onkeydown="if(event.key==='Enter')openInterfaceDetail('${idAttr}')">
+        return `<article class="if-card${isUp(i) ? '' : ' is-down'}" tabindex="0" role="button" data-click="ifaceDetail" data-id="${escapeHtml(i.id)}">
             <div class="if-top">
                 <span class="if-ico"><svg viewBox="0 0 24 24" aria-hidden="true">${IF_ICONS[kind]}</svg></span>
                 <span class="if-name"><b data-notr>${escapeHtml(i.name)}</b><span class="if-desc" data-notr>${escapeHtml(i.description) || ''}</span></span>
@@ -4448,10 +4458,10 @@ function renderChecks(el, checks) {
                 <button type="button" class="btn btn-small" data-copy="${i}:${k}">Copy</button>
             </div>`).join('') : '';
         let action = '';
-        if (c.ok === false && c.action === 'installHooks') action = '<button type="button" class="btn btn-small btn-primary" onclick="installHooks()">Install hooks</button>';
-        if (c.ok === false && c.action === 'installCurl') action = '<button type="button" class="btn btn-small btn-primary" onclick="installCurl()">Install curl</button>';
-        if (c.ok === false && c.action === 'installOpenssl') action = '<button type="button" class="btn btn-small btn-primary" onclick="installPhpModule(\'installOpenssl\', \'OpenSSL\')">Install</button>';
-        if (c.ok === false && c.action === 'installSockets') action = '<button type="button" class="btn btn-small btn-primary" onclick="installPhpModule(\'installSockets\', \'sockets\')">Install</button>';
+        if (c.ok === false && c.action === 'installHooks') action = '<button type="button" class="btn btn-small btn-primary" data-click="installHooks">Install hooks</button>';
+        if (c.ok === false && c.action === 'installCurl') action = '<button type="button" class="btn btn-small btn-primary" data-click="installCurl">Install curl</button>';
+        if (c.ok === false && c.action === 'installOpenssl') action = '<button type="button" class="btn btn-small btn-primary" data-click="installPhp" data-action="installOpenssl" data-name="OpenSSL">Install</button>';
+        if (c.ok === false && c.action === 'installSockets') action = '<button type="button" class="btn btn-small btn-primary" data-click="installPhp" data-action="installSockets" data-name="sockets">Install</button>';
         return `<div class="check-row${c.ok === true ? ' is-ok' : ''}"${c.detail ? ` title="${escapeHtml(c.detail)}"` : ''}>
             <span class="led ${led}"></span>
             <div class="check-text">
@@ -4528,7 +4538,7 @@ async function createDatabase() {
     const resultEl = byId('setupDbResult');
     btn.disabled = true;
     resultEl.textContent = 'Working…';
-    const result = await (await fetch(API + '?action=setupDb', { cache: 'no-store' })).json();
+    const result = await postJson({ action: 'setupDb' });
     if (result.success) {
         const hooks = result.hooks && result.hooks.success ? 'ndm hooks installed.' : 'ndm hooks NOT installed (see Tools after sign-in).';
         resultEl.innerHTML = `<span class="led led-green"></span> ${result.policies_imported} policies imported. ${hooks}`;
@@ -4609,7 +4619,7 @@ function dnsAdd(ip) {
     ip = ip.trim();
     if (!BW_IPV4.test(ip)) { showToast(t('Not an IPv4 address: {0}', ip), 'error'); return; }
     if (dnsPicked.includes(ip)) return;
-    if (dnsPicked.length >= 8) { showToast('At most 3 DNS servers', 'error'); return; }
+    if (dnsPicked.length >= 8) { showToast('At most 8 DNS servers', 'error'); return; }
     dnsPicked.push(ip);
     renderDnsPicker();
 }
@@ -5132,7 +5142,7 @@ function exitText(r) {
 function listRow(l) {
             const st = listStatus(l);
             return `<tr class="domain-row">
-                <td data-label="List"><strong>${escapeHtml(l.site)}</strong>${listModePill(l)}${l.grp ? `<div class="card-note list-sub">${escapeHtml(l.grp)}</div>` : ''}</td>
+                <td data-label="List"><strong data-notr>${escapeHtml(l.site)}</strong>${listModePill(l)}${l.grp ? `<div class="card-note list-sub">${escapeHtml(l.grp)}</div>` : ''}</td>
                 <td data-label="Interface" class="cell-mono">${escapeHtml(l.interface) || '<span class="muted">—</span>'}</td>
                 <td data-label="Gateway" class="cell-mono">${escapeHtml(l.gateway) || '<span class="muted">—</span>'}</td>
                 <td data-label="Domains in source" class="cell-mono">${l.n_domains}</td>
@@ -5988,7 +5998,9 @@ document.getElementById('staticRouteSave').addEventListener('click', async () =>
     if (!routes.length) { msg.textContent = t('Enter at least one address or network'); return; }
     if (!iface && !gateway) { msg.textContent = t('Set an interface or a gateway: a route needs an exit'); return; }
     msg.textContent = '';
-    const r = await rciCall({ action: 'addStaticRoutes', routes, interface: iface, gateway, comment: document.getElementById('staticRouteComment').value, auto: document.getElementById('staticRouteAuto').checked }, 'Add routes');
+    const wide = routes.filter(r => /\/[0-7]$/.test(r));
+    if (wide.length && !confirm(t('{0} covers a large part of the Internet (0.0.0.0/0 is all of it). Add anyway?', wide.join(', ')))) return;
+    const r = await rciCall({ action: 'addStaticRoutes', routes, wide: wide.length > 0, interface: iface, gateway, comment: document.getElementById('staticRouteComment').value, auto: document.getElementById('staticRouteAuto').checked }, 'Add routes');
     if (r.error) { msg.textContent = t(r.error); return; }
     if (r.dry_run) return;
     document.getElementById('staticRouteModal').style.display = 'none';
@@ -6229,7 +6241,7 @@ function dpiRenderDomains(run, keys) {
     if (!list.length) html += `<tr><td colspan="${3 + keys.length * 4}" class="loading">${escapeHtml(t('Nothing here'))}</td></tr>`;
     list.forEach(d => {
         const sub = d.dns ? t('DNS: {0} at the provider', d.dns) : d.ip;
-        html += `<tr><td><span class="dpi-dom">${escapeHtml(d.domain)}</span><span class="dpi-sub">${escapeHtml(sub)}</span></td>`;
+        html += `<tr><td><span class="dpi-dom" data-notr>${escapeHtml(d.domain)}</span><span class="dpi-sub">${escapeHtml(sub)}</span></td>`;
         keys.forEach(k => {
             const c = (d.cells || {})[k] || {};
             const wait = d.level === 'pending' || dpiRunning;
@@ -6237,7 +6249,7 @@ function dpiRenderDomains(run, keys) {
         });
         const route = run.targets[d.domain];
         let target = '';
-        if (route) target = `<span class="chip">${escapeHtml(route.policy)}</span><span class="dpi-sub">${escapeHtml(t(route.via === 'list' ? 'list {0}' : 'target {0}', route.what))}</span>`;
+        if (route) target = `<span class="chip" data-notr>${escapeHtml(route.policy)}</span><span class="dpi-sub">${escapeHtml(t(route.via === 'list' ? 'list {0}' : 'target {0}', route.what))}</span>`;
         else if (d.level !== 'ok' && d.level !== 'pending') target = `<button type="button" class="btn btn-small" data-add="${escapeHtml(d.domain)}">+ ${escapeHtml(t('Target'))}</button>`;
         html += `<td>${dpiVerdict(d.level, d.verdict)}</td><td>${target}</td></tr>`;
     });
@@ -6262,7 +6274,7 @@ function dpiRenderDns(run) {
             return `<th>${escapeHtml(label)}${dev ? `<span class="dpi-sub dpi-route">→ ${escapeHtml(dev)}</span>` : ''}</th>`;
         }).join('') + `<th>${escapeHtml(t('Verdict'))}</th></tr></thead><tbody>`;
     run.dns.rows.forEach(r => {
-        html += `<tr><td><span class="dpi-dom">${escapeHtml(r.domain)}</span>${r.control ? ` <span class="chip">${escapeHtml(t('control'))}</span>` : ''}</td>`
+        html += `<tr><td><span class="dpi-dom" data-notr>${escapeHtml(r.domain)}</span>${r.control ? ` <span class="chip">${escapeHtml(t('control'))}</span>` : ''}</td>`
             + cols.map(([k]) => `<td>${dpiCell(r.cells[k])}</td>`).join('')
             + `<td>${dpiVerdict(r.level, r.verdict)}</td></tr>`;
     });
@@ -6298,7 +6310,7 @@ function dpiRenderTcp(run, keys) {
     list.forEach(r => {
         const res = r.res[first];
         const [level, text] = res ? verdicts[res.verdict] : (dpiRunning ? ['pending', 'Checking…'] : ['', '—']);
-        html += `<tr><td>${escapeHtml(r.provider)}<span class="dpi-sub">${r.asn ? 'AS' + escapeHtml(r.asn) + ' · ' : ''}${escapeHtml(r.id)}</span></td><td class="dpi-dom">${escapeHtml(r.ip)}${r.port === 80 ? ':80' : ''}</td>`
+        html += `<tr><td>${escapeHtml(r.provider)}<span class="dpi-sub">${r.asn ? 'AS' + escapeHtml(r.asn) + ' · ' : ''}${escapeHtml(r.id)}</span></td><td class="dpi-dom" data-notr>${escapeHtml(r.ip)}${r.port === 80 ? ':80' : ''}</td>`
             + keys.map(k => `<td>${dpiKbBar(r.res[k])}</td>`).join('')
             + `<td>${dpiVerdict(level, t(text, res ? Math.round(res.kb) : ''))}</td></tr>`;
     });
@@ -6334,7 +6346,7 @@ function dpiSniTop(run) {
     top.forEach((x, i) => {
         const width = Math.round(x.passed.length / hostings * 100);
         const open = dpiSniTopOpen.has(x.sni);
-        html += `<tr class="dpi-top-row${open ? ' open' : ''}" data-top="${escapeHtml(x.sni)}"><td class="dpi-top-n"><span class="dpi-caret">▸</span>${i + 1}</td><td class="dpi-dom">${escapeHtml(x.sni)}</td>
+        html += `<tr class="dpi-top-row${open ? ' open' : ''}" data-top="${escapeHtml(x.sni)}"><td class="dpi-top-n"><span class="dpi-caret">▸</span>${i + 1}</td><td class="dpi-dom" data-notr>${escapeHtml(x.sni)}</td>
             <td><div class="dpi-kb"><span class="dpi-track"><span class="dpi-fill ok" style="width:${width}%"></span></span>
             <b class="dpi-top-score">${escapeHtml(t('{0} of {1}', x.passed.length, hostings))}</b></div></td>
             <td class="muted dpi-top-tried">${escapeHtml(t('tried on {0}', x.tried))}</td></tr>`;
@@ -6395,11 +6407,11 @@ function dpiRenderSni(run) {
         if (!list.length) html += `<tr class="dpi-sni-row"><td colspan="3" class="loading">${escapeHtml(t('Nothing here'))}</td></tr>`;
         list.forEach(r => {
             if (r.verdict === 'pending') {
-                html += `<tr class="dpi-sni-row"><td class="dpi-dom">${escapeHtml(r.sni)}</td><td><span class="dpi-r pend">…</span></td><td>${dpiVerdict('pending', t(g.active ? 'Checking…' : 'Waiting'))}</td></tr>`;
+                html += `<tr class="dpi-sni-row"><td class="dpi-dom" data-notr>${escapeHtml(r.sni)}</td><td><span class="dpi-r pend">…</span></td><td>${dpiVerdict('pending', t(g.active ? 'Checking…' : 'Waiting'))}</td></tr>`;
                 return;
             }
             const [level, text] = verdicts[r.verdict];
-            html += `<tr class="dpi-sni-row"><td class="dpi-dom">${escapeHtml(r.sni)}</td><td>${dpiKbBar(r)}</td><td>${dpiVerdict(level, t(text, Math.round(r.kb)))}</td></tr>`;
+            html += `<tr class="dpi-sni-row"><td class="dpi-dom" data-notr>${escapeHtml(r.sni)}</td><td>${dpiKbBar(r)}</td><td>${dpiVerdict(level, t(text, Math.round(r.kb)))}</td></tr>`;
         });
     });
     html += '</tbody></table></div>';
@@ -6563,4 +6575,30 @@ document.getElementById('dpiListsSave').addEventListener('click', async () => {
     showToast(t('Lists saved'), 'success');
     dpiListsClose();
     loadDpi();
+});
+
+// One click handler for the buttons rendered from data: the values travel in data-* attributes,
+// never inside JavaScript written into the page, so a client or policy name cannot become code
+const CLICK_ACTIONS = {
+    togglePolicy: el => togglePolicyCollapse(+el.dataset.id),
+    openTarget: el => openTargetDetail(+el.dataset.id),
+    deleteDomain: el => deleteDomain(+el.dataset.id),
+    policyRoutes: el => openPolicyRoutes(el.dataset.name),
+    tableCount: el => loadTableRouteCount(el.dataset.ref),
+    tableView: el => openTableView(el.dataset.ref),
+    clientDetail: el => openClientDetail(el.dataset.mac, el.dataset.label, el.dataset.ip),
+    quickAdd: el => quickAddTarget(el.dataset.ip, el.dataset.policy),
+    ifaceDetail: el => openInterfaceDetail(el.dataset.id),
+    installHooks: () => installHooks(),
+    installCurl: () => installCurl(),
+    installPhp: el => installPhpModule(el.dataset.action, el.dataset.name),
+};
+document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-click]');
+    if (el && CLICK_ACTIONS[el.dataset.click]) CLICK_ACTIONS[el.dataset.click](el);
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const el = e.target.closest('[data-click="ifaceDetail"]');
+    if (el) openInterfaceDetail(el.dataset.id);
 });

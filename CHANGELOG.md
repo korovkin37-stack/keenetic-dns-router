@@ -2,6 +2,19 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.39.0
+Security hardening after an audit.
+- No inline click handlers in the panel any more; a Content-Security-Policy forbids foreign scripts.
+- The password for `su` goes through stdin and no longer shows in the process list.
+- Actions that change something are accepted only as a JSON POST (protection against cross-site requests).
+- 5 wrong passwords from one address lock the sign-in for 5 minutes.
+- Update from GitHub: the archive is checked against the sha256 that GitHub gives, an older or the same version is refused.
+- RCI requests time out after 15 s; an empty list of policies from Keenetic no longer wipes the policies in the panel.
+- Lists skip 100.64/10, 172.16/12, 198.18/15 and the documentation networks too.
+- A static route wider than /8 (0.0.0.0/0 included) asks for confirmation.
+- Faster tables of targets and policies; sorting by the current IP is numeric; the DNS limit message says 8.
+- nginx (fresh install): `nosniff` and `X-Frame-Options` headers, the `dpi/` folder is closed. On an existing install add `dpi/.*` to the `location` that hides `config.php`.
+
 ## 5.38.1
 - Multi-line tooltips (the DPI check among them) and multi-line notes in the check results are translated now.
 - The release notes in the panel follow the interface language.

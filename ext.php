@@ -1431,8 +1431,12 @@ function doCheckGithubUpdate($in) {
     $tag = (string)$release['tag_name'];
     $latest = ltrim($tag, 'v');
     $asset = '';
+    $digest = '';
     foreach ((array)($release['assets'] ?? []) as $a) {
-        if (($a['name'] ?? '') === 'dns-router.tar.gz') $asset = (string)$a['browser_download_url'];
+        if (($a['name'] ?? '') !== 'dns-router.tar.gz') continue;
+        $asset = (string)$a['browser_download_url'];
+        // GitHub counts the sha256 of every asset itself
+        if (preg_match('/^sha256:([0-9a-f]{64})$/', (string)($a['digest'] ?? ''), $m)) $digest = $m[1];
     }
 
     $notes = [];
@@ -1454,7 +1458,7 @@ function doCheckGithubUpdate($in) {
     }
 
     $result = ['success' => true, 'current' => APP_VERSION, 'latest' => $latest, 'tag' => $tag, 'newer' => $newer,
-        'published' => (string)($release['published_at'] ?? ''), 'url' => (string)($release['html_url'] ?? ''), 'asset' => $asset,
+        'published' => (string)($release['published_at'] ?? ''), 'url' => (string)($release['html_url'] ?? ''), 'asset' => $asset, 'digest' => $digest,
         'notes' => $notes, 'lang' => $lang, 'checked' => time()];
     file_put_contents($cacheFile, json_encode($result));
     @chmod($cacheFile, 0666);
@@ -1463,14 +1467,17 @@ function doCheckGithubUpdate($in) {
 
 // Downloads the archive of the newest release and checks it the same way as an uploaded one
 function doGithubDownloadUpdate() {
-    $check = doCheckGithubUpdate(['lang' => 'en']);
+    $check = doCheckGithubUpdate(['lang' => 'en', 'force' => 1]);
     if (!$check['success']) return $check;
+    if (!$check['newer']) return ['success' => false, 'error' => 'The release on GitHub is not newer than this version'];
     if ($check['asset'] === '') return ['success' => false, 'error' => 'The release has no dns-router.tar.gz'];
+    if ($check['digest'] === '') return ['success' => false, 'error' => 'GitHub gave no checksum for the archive'];
     $tmp = tempnam(sys_get_temp_dir(), 'krgh_');
     $error = listsDownload($check['asset'], $tmp);
     $raw = (string)file_get_contents($tmp);
     @unlink($tmp);
     if ($error !== '') return ['success' => false, 'error' => $error];
+    if (!hash_equals($check['digest'], hash('sha256', $raw))) return ['success' => false, 'error' => 'The archive does not match the checksum from GitHub'];
     return updateStage($raw);
 }
 
@@ -1634,9 +1641,14 @@ function listsEntryReject($item) {
     if (!isValidIPv4Cidr($item)) return 'invalid';
     [$ip, $len] = array_pad(explode('/', $item, 2), 2, '32');
     if ((int)$len < 8) return 'wide';
-    $first = (int)$ip;
-    if ($first === 0 || $first === 10 || $first === 127 || strpos($ip, '192.168.') === 0 || strpos($ip, '169.254.') === 0) return 'private';
-    if ($first >= 224) return 'special';
+    if ((int)$ip >= 224) return 'special';
+    // The entry is rejected when it overlaps a private or reserved range
+    $net = ip2long($ip);
+    foreach (['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12', '192.0.2.0/24', '192.168.0.0/16', '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24'] as $range) {
+        [$rip, $rlen] = explode('/', $range);
+        $mask = -1 << (32 - min((int)$len, (int)$rlen)) & 0xffffffff;
+        if (($net & $mask) === (ip2long($rip) & $mask)) return 'private';
+    }
     return '';
 }
 
@@ -2676,6 +2688,7 @@ function doAddStaticRoutes($in) {
     if (textLength($comment) > 60) fail('At most 60 characters');
     $commands = [];
     foreach ($dests as $dest) {
+        if (preg_match('~/[0-7]$~', $dest) && empty($in['wide'])) fail("$dest covers a large part of the Internet: confirm it");
         $route = staticDestination($dest);
         if ($gateway !== '') $route['gateway'] = $gateway;
         if ($interface !== '') $route['interface'] = $interface;

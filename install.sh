@@ -302,7 +302,9 @@ if [ $MANUAL = 1 ]; then
     say "nginx: не меняю"
     if [ -f "$NGX" ] && ! grep -q 'ext\.php' "$NGX"; then
         echo "Добавьте в server панели (и перезагрузите nginx: nginx -s reload):"
-        echo '    location ~ ^/(config\.php|routes\.db|ext\.php)$ { return 404; }'
+        echo '    location ~ ^/(config\.php|routes\.db|ext\.php|dpi/.*)$ { return 404; }'
+        echo '    add_header X-Content-Type-Options nosniff always;'
+        echo '    add_header X-Frame-Options DENY always;'
         echo '    client_max_body_size 8m;   # загрузка обновления через вкладку Settings'
         echo "Файлы lang.*.json отдаются как обычная статика из каталога панели."
     fi
@@ -328,7 +330,9 @@ http {
         listen $PORT;
         root $WWW;
         index index.html;
-        location ~ ^/(config\.php|routes\.db|ext\.php)\$ { return 404; }
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options DENY always;
+        location ~ ^/(config\.php|routes\.db|ext\.php|dpi/.*)\$ { return 404; }
         location ~ \.php\$ {
             include /opt/etc/nginx/fastcgi_params;
             fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
