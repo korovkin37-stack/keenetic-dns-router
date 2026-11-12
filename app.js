@@ -1,7 +1,7 @@
 // app.js - клиентская логика
 
 const API = '/app.php';
-const JS_VERSION = '5.40.0'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.40.1'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -1977,6 +1977,7 @@ function jobNoteText(job) {
     }
     if (job.state === 'done') {
         if (job.route_errors) text += t('The router rejected {0} routes: {1}', job.route_errors, job.route_error || '') + ' ';
+        if (job.rule_error) text += t('An ip rule was not written, traffic does not reach the table: {0}', job.rule_error) + ' ';
         if (job.failed) text += t('{0} lists failed to update: see the Status column', job.failed) + ' ';
         if (job.held) text += t('{0} lists held back: too many entries disappeared', job.held);
         return text.trim();
@@ -4991,6 +4992,7 @@ async function loadLists() {
 function reportListsJob(job) {
     if (!job) return;
     if (job.failed) showToast(t('{0} lists failed to update: see the Status column', job.failed), 'error', 8000);
+    else if (job.applied && job.applied.rule_error) showToast(t('An ip rule was not written, traffic does not reach the table: {0}', job.applied.rule_error), 'error', 10000);
     else if (job.applied && job.applied.route_errors) showToast(t('The router rejected {0} routes: {1}', job.applied.route_errors, job.applied.route_error || ''), 'error', 10000);
     else if (job.held) showToast(t('{0} lists held back: too many entries disappeared', job.held), 'info', 8000);
     else showToast(t('Lists updated from the source: {0} routes written to the router in total', job.applied ? job.applied.routes : 0), 'success', 6000);
@@ -5507,6 +5509,7 @@ function listResultHtml(r, applied, saved) {
     } else if (applied && applied.success) {
         row('ok', t('Written to the router: {0} routes in total (targets and lists)', applied.routes));
         if (applied.route_errors) row('bad', t('The router rejected {0} routes: {1}', applied.route_errors, applied.route_error || ''));
+        if (applied.rule_error) row('bad', t('An ip rule was not written, traffic does not reach the table: {0}', applied.rule_error));
     } else if (applied) {
         row('bad', t(applied.error || 'Routes were not applied'));
     }

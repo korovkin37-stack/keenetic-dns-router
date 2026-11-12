@@ -1,5 +1,5 @@
 <?php
-const APP_VERSION = '5.40.0';
+const APP_VERSION = '5.40.1';
 const COOKIE_NAME = 'krdns_auth';
 const COOKIE_TTL = 604800;
 
@@ -345,12 +345,18 @@ function isValidIPv4Cidr($v) {
     return preg_match('/^([0-9]|[12][0-9]|3[0-2])$/', (string)$prefix) === 1;
 }
 
+// A target never covers the whole Internet: 0.0.0.0/0 would become a default route in the policy table
 function isValidTarget($v) {
-    return isValidDomain($v) || isValidIPv4Cidr($v);
+    return isValidDomain($v) || (isValidIPv4Cidr($v) && !str_ends_with($v, '/0'));
 }
 
 function isValidRouteTarget($v) {
-    return isValidIPv4($v) || isValidIPv4Cidr($v);
+    return isValidIPv4Cidr($v) && !str_ends_with($v, '/0');
+}
+
+// true/1/"1"/"true"/"yes"/"on" => 1, anything else => 0 (filter_var is not there without ext-filter)
+function toFlag($v) {
+    return in_array(strtolower(trim((string)$v)), ['1', 'true', 'yes', 'on'], true) ? 1 : 0;
 }
 
 // ============================================ RCI ============================================
@@ -786,11 +792,19 @@ function doApplyRoutes(SQLite3 $db) {
         if (preg_match('/^(?!Command failed).*\S.*$/m', $out, $m)) $route_error = trim($m[0]);
     }
 
-    // Rules written with the prefs of the previous apply are removed as well, so changing a pref leaves nothing behind.
-    $previous = array_map('intval', explode(' ', (string)getSetting($db, 'pref_applied')));
+    // Rules: a rule that is already right stays untouched (no del+add gap), stale prefs go, missing rules are added.
+    // Rules of the previous prefs are removed as well, so changing a pref leaves nothing behind.
+    $ours = array_unique(array_merge([$prefs['targets'], $prefs['lists']], array_map('intval', explode(' ', (string)getSetting($db, 'pref_applied')))));
+    $rulesNow = [];
+    foreach (explode("\n", execReadOnly(['/opt/sbin/ip', 'rule', 'show'])) as $row) {
+        if (preg_match('/^(\d+):.*\bfwmark 0x([0-9a-f]+)\b.*\blookup (\d+)/i', $row, $m)) {
+            $rulesNow[] = ['pref' => (int)$m[1], 'mark' => ltrim(strtolower($m[2]), '0'), 'table' => (int)$m[3]];
+        }
+    }
     $cleanup = [];
     foreach ($policies as $policy) {
         $mark = $policy['mark_hex'];
+        $markBare = ltrim(strtolower(substr($mark, 2)), '0');
         $tables = [$policy['our_table'] => $prefs['targets'], listTable($policy['our_table']) => $prefs['lists']];
         foreach ($tables as $table => $pref) {
             $current = execReadOnly(['/opt/sbin/ip', 'route', 'show', 'table', (string)$table]);
@@ -798,16 +812,35 @@ function doApplyRoutes(SQLite3 $db) {
                 $parts = preg_split('/\s+/', trim($row));
                 if (in_array($parts[0], ['unreachable', 'blackhole', 'prohibit', 'throw'], true)) array_shift($parts);
                 $dest = $parts[0];
-                if (!preg_match('~^\d+\.\d+\.\d+\.\d+(/\d+)?$~', $dest) || isset($want[$table][$dest])) continue;
+                // "default" is how ip prints 0.0.0.0/0: a target can never want it, so it always goes
+                if ($dest !== 'default' && !preg_match('~^\d+\.\d+\.\d+\.\d+(/\d+)?$~', $dest)) continue;
+                if (isset($want[$table][$dest])) continue;
                 $cleanup[] = 'route del ' . $dest . ' table ' . $table;
             }
-            foreach (array_unique(array_merge([$prefs['targets'], $prefs['lists']], $previous)) as $old) {
-                if ($old > 0) $cleanup[] = "rule del fwmark $mark table $table pref $old";
+            $wanted = isset($want[$table]) ? $pref : 0;
+            $present = false;
+            foreach ($rulesNow as $rule) {
+                if ($rule['mark'] !== $markBare || $rule['table'] !== (int)$table || !in_array($rule['pref'], $ours, true)) continue;
+                if ($rule['pref'] === $wanted && !$present) $present = true;
+                else $cleanup[] = "rule del fwmark $mark table $table pref {$rule['pref']}";
             }
-            if (isset($want[$table])) $cleanup[] = "rule add fwmark $mark table $table pref $pref";
+            if ($wanted && !$present) $cleanup[] = "rule add fwmark $mark table $table pref $wanted";
         }
     }
-    ipRouteBatch($cleanup);
+    // Every line of the cleanup must work: a failed rule add means the routes are there but nothing sends traffic to them
+    $rule_error = '';
+    if ($cleanup) {
+        $out = (string)ipRouteBatch($cleanup);
+        $why = '';
+        foreach (explode("\n", $out) as $row) {
+            if (!preg_match('/^Command failed .*:(\d+)\s*$/', $row, $m)) {
+                if (trim($row) !== '') $why = trim($row);
+                continue;
+            }
+            $command = $cleanup[(int)$m[1] - 1] ?? '';
+            if ($rule_error === '' || str_starts_with($command, 'rule add')) $rule_error = $command . ': ' . $why;
+        }
+    }
     setSetting($db, 'pref_applied', $prefs['targets'] . ' ' . $prefs['lists']);
 
     $total_routes = 0;
@@ -819,6 +852,7 @@ function doApplyRoutes(SQLite3 $db) {
         'lists'    => count($lists),
         'route_errors' => $route_errors,
         'route_error'  => $route_error,
+        'rule_error'   => $rule_error,
         'policies' => count($policy_seen),
     ];
 }
@@ -837,8 +871,9 @@ function readTarget(array $in) {
         'policy_id' => (int)($in['policy_id'] ?? 0),
         'interface' => trim((string)($in['interface'] ?? '')),
         'gateway'   => trim((string)($in['gateway'] ?? '')),
-        'enabled'   => !isset($in['enabled']) || filter_var($in['enabled'], FILTER_VALIDATE_BOOLEAN) ? 1 : 0,
+        'enabled'   => isset($in['enabled']) ? toFlag($in['enabled']) : 1,
     ];
+    if (str_ends_with($t['domain'], '/0')) fail('A target cannot be a /0 network: that is a default route for the whole policy');
     if (!isValidTarget($t['domain'])) fail('Invalid domain, IP or CIDR');
     if ($t['policy_id'] <= 0) fail('Valid policy is required');
     if (!isValidInterface($t['interface'])) fail('Invalid interface name');
@@ -1014,7 +1049,7 @@ function doImportConfig(SQLite3 $db, $data) {
         }
         $interface = isset($entry['interface']) ? trim((string)$entry['interface']) : '';
         $gateway = isset($entry['gateway']) ? trim((string)$entry['gateway']) : '';
-        $enabled = !isset($entry['enabled']) || filter_var($entry['enabled'], FILTER_VALIDATE_BOOLEAN) ? 1 : 0;
+        $enabled = isset($entry['enabled']) ? toFlag($entry['enabled']) : 1;
 
         if (!isValidTarget($target) || !isset($policies[$policyName])
             || !isValidInterface($interface) || !isValidGateway($gateway)) {

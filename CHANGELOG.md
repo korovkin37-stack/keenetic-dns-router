@@ -2,6 +2,12 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.40.1
+Fixes after review of 5.40.0.
+- ip rules that are already right stay untouched; a rule that the router refused to add is reported in the task and in the list window instead of a silent "routes applied".
+- A target cannot be a /0 network; a default route left in a policy table is removed on the next apply.
+- `enabled` in targets and imports no longer needs the PHP filter extension, which minimal Entware builds lack.
+
 ## 5.40.0
 The second round of the audit.
 - Routes are applied without a gap: new routes are written over the old ones, then the stale ones are removed; the tables are never emptied, so traffic of a target keeps its route the whole time. Two root calls instead of dozens.

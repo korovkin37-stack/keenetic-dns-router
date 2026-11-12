@@ -1501,6 +1501,8 @@
 "bird4.conf saved without a syntax check: bird was not found (backup: {0}).": "bird4.conf сохранён без проверки синтаксиса: bird не найден (копия: {0}).",
 "bird rejected the config, nothing was saved: {0}": "bird не принял конфиг, ничего не сохранено: {0}",
 "bird was not found: syntax check skipped": "bird не найден: проверка синтаксиса пропущена",
-"The panel is being updated: try again in a minute": "Панель обновляется: повторите через минуту"
+"The panel is being updated: try again in a minute": "Панель обновляется: повторите через минуту",
+"An ip rule was not written, traffic does not reach the table: {0}": "Правило ip rule не записано, трафик не попадает в таблицу: {0}",
+"A target cannot be a /0 network: that is a default route for the whole policy": "Цель не может быть сетью /0: это маршрут по умолчанию для всей политики"
 }
 }

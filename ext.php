@@ -2012,7 +2012,7 @@ function doSyncList(SQLite3 $db, $id, $force = false) {
 function listsLastJob() {
     $job = jobRead('job');
     if (!$job || $job['state'] !== 'done') return null;
-    return ['applied' => ['routes' => $job['routes'], 'route_errors' => $job['route_errors'], 'route_error' => $job['route_error']], 'failed' => $job['failed'] ?? 0, 'held' => $job['held'] ?? 0];
+    return ['applied' => ['routes' => $job['routes'], 'route_errors' => $job['route_errors'], 'route_error' => $job['route_error'], 'rule_error' => $job['rule_error'] ?? ''], 'failed' => $job['failed'] ?? 0, 'held' => $job['held'] ?? 0];
 }
 
 function doGetLists(SQLite3 $db) {
@@ -2193,7 +2193,7 @@ function jobArchive($job) {
         }
     }
     $lines = @file(sys_get_temp_dir() . '/dns-router-job.log', FILE_IGNORE_NEW_LINES) ?: [];
-    $keep = ['id', 'kind', 'source', 'state', 'started', 'finished', 'steps', 'step', 'total', 'done', 'failed', 'held', 'targets_changed', 'target_errors', 'routes', 'route_errors', 'route_error', 'error'];
+    $keep = ['id', 'kind', 'source', 'state', 'started', 'finished', 'steps', 'step', 'total', 'done', 'failed', 'held', 'targets_changed', 'target_errors', 'routes', 'route_errors', 'route_error', 'rule_error', 'error'];
     $entry = array_intersect_key($job, array_flip($keep));
     $entry['finished'] = $job['finished'] ?? time();
     if ($entry['state'] === 'done') $entry['done'] = $entry['total'];
@@ -2514,7 +2514,8 @@ function jobRun(SQLite3 $db, $kind, array $ids) {
     }
     if (birdReassert($db)) jobLog('bgp: the rule and the neighbor routes are in place');
     jobLog('routes: ' . $applied['routes'] . ' written' . ($applied['route_errors'] ? ', ' . $applied['route_errors'] . ' rejected: ' . $applied['route_error'] : ''));
-    jobSet(['state' => 'done', 'finished' => time(), 'routes' => $applied['routes'], 'route_errors' => $applied['route_errors'], 'route_error' => $applied['route_error']]);
+    if ($applied['rule_error'] !== '') jobLog('rules: FAILED ' . $applied['rule_error']);
+    jobSet(['state' => 'done', 'finished' => time(), 'routes' => $applied['routes'], 'route_errors' => $applied['route_errors'], 'route_error' => $applied['route_error'], 'rule_error' => $applied['rule_error']]);
     jobLog('finished');
     jobFinished();
 }
