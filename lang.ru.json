@@ -1526,6 +1526,27 @@
 "{0} differences between the tables and the database": "Расхождений между таблицами и базой: {0}",
 "Tasks are running: {0}": "Выполняется задач: {0}",
 "The routes are being written right now: stop anyway?": "Маршруты прямо сейчас записываются: всё равно остановить?",
-"The routes are being written right now. Kill the task anyway? The tables may stay half updated until the next apply (\"Tables and database\" shows what differs).": "Маршруты прямо сейчас записываются. Всё равно убить задачу? Таблицы могут остаться обновлёнными наполовину до следующего применения («Таблицы и база» покажет расхождения)."
+"The routes are being written right now. Kill the task anyway? The tables may stay half updated until the next apply (\"Tables and database\" shows what differs).": "Маршруты прямо сейчас записываются. Всё равно убить задачу? Таблицы могут остаться обновлёнными наполовину до следующего применения («Таблицы и база» покажет расхождения).",
+"Select all shown targets": "Выделить все показанные цели",
+"Enable": "Включить",
+"Clear the selection (Esc)": "Снять выделение (Esc)",
+"Clear the selection": "Снять выделение",
+"Keep as is": "Не менять",
+"Set": "Задать",
+"Gateway:": "Шлюз:",
+"Select the targets of this policy": "Выделить цели этой политики",
+"Select": "Выделить",
+"{0}: {1} targets changed": "{0}: изменено целей: {1}",
+"Skipped: {0}": "Пропущены: {0}",
+"Selected targets: {0}. Only what you set here changes.": "Выбрано целей: {0}. Меняется только то, что задано здесь.",
+"Choose an interface": "Выберите интерфейс",
+"Enter the gateway": "Введите шлюз",
+"Nothing to change": "Нечего менять",
+"Delete {0} targets? This can't be undone.": "Удалить цели ({0})? Это нельзя отменить.",
+"no interface and no gateway left": "не осталось ни интерфейса, ни шлюза",
+"already in that policy": "уже есть в этой политике",
+"Select at least one target": "Выберите хотя бы одну цель",
+"Leave empty": "Оставить пустым",
+"Edit the targets": "Правка целей"
 }
 }

@@ -2,6 +2,13 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.42.1
+- Editing several targets is one window: policy, interface and gateway together, each can be kept as is.
+
+## 5.42.0
+- Several targets at once: tick targets in the table (a tick in a policy header takes all its shown targets, Shift+click takes a range, the tick in the table header takes everything shown). A bar at the bottom changes the exit (interface and gateway, each can be kept, set or emptied), moves to another policy, switches on and off or deletes. One transaction and one task for the routes; targets that would be left without an exit or already exist in the new policy are skipped and named.
+- The search on Targets also finds the interface and the gateway.
+
 ## 5.41.4
 - Fixed tasks started from the panel hanging forever with an empty log: the background process wrote its output into a file named after the owner of app.php, so once a hook (root) had created that file the web user could not open it, and the shell did not start the task at all. The file is now named after the user that starts the process.
 - Background processes are started with `setsid`: a restart of php-fpm no longer takes them down.

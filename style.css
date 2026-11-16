@@ -3302,3 +3302,35 @@ button.version-badge.has-update::after { content: ' ↑'; }
     border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%; animation: spin .9s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) { #jobLogBtn.has-jobs::before { animation-duration: 3s; } }
+
+/* several targets at once */
+#domainsTable .col-check, #domainsTable .cell-check { width: 28px; padding-right: 0; }
+#domainsTable input[type=checkbox] { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; vertical-align: middle; }
+.policy-group-left .group-check { margin-right: 8px !important; }
+.domain-row.is-picked td { background: rgb(var(--accent-rgb) / .08); }
+.bulk-bar {
+    position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 900;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center;
+    padding: 10px 14px; border-radius: 14px; background: var(--surface); border: 1px solid var(--accent);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .45); max-width: calc(100% - 32px);
+}
+.bulk-bar[hidden] { display: none; }
+body.has-bulk #domainsTab { padding-bottom: 80px; }
+.bulk-count { font-weight: 600; margin-right: 6px; white-space: nowrap; }
+#bulkExitBox select + select, #bulkExitBox select + input { margin-top: 6px; }
+@media (max-width: 768px) {
+    .bulk-bar {
+        left: 12px; right: 12px; transform: none; max-width: none; bottom: calc(76px + env(safe-area-inset-bottom));
+        display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+    }
+    .bulk-bar .bulk-count { grid-column: 1 / 3; margin: 0; align-self: center; }
+    .bulk-bar .icon-btn { grid-column: 3; justify-self: end; }
+    #domainsTable .domain-row.is-picked td { background: none; }
+    #domainsTable .domain-row.is-picked { outline: 1px solid var(--accent); }
+    body.has-bulk #domainsTab { padding-bottom: 150px; }
+    .bulk-bar .btn { width: 100%; }
+    #domainsTable .domain-row { position: relative; }
+    #domainsTable .cell-check { position: absolute; top: 17px; left: 14px; width: auto; padding: 0; border: 0; }
+    #domainsTable .cell-check::before { display: none; }
+    #domainsTable .domain-row .cell-domain { padding-left: 38px; }
+}

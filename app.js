@@ -1,7 +1,7 @@
 // app.js - клиентская логика
 
 const API = '/app.php';
-const JS_VERSION = '5.41.4'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.42.1'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -587,6 +587,7 @@ function initApp() {
             document.querySelectorAll('.tab-content').forEach(content => {
                 content.classList.toggle('active', content.id === state.currentTab + 'Tab');
             });
+            updateBulkBar();
             // Таблицы маршрутизации - live-срез ядра, а не часть обычного
             // state; перечитываем при каждом открытии вкладки, а не только
             // один раз при старте страницы.
@@ -934,11 +935,15 @@ function renderDomains(filterText = '') {
         domains = domains.filter(domain => 
             domain.domain.toLowerCase().includes(search) ||
             (domain.policy_name && domain.policy_name.toLowerCase().includes(search)) ||
-            (domain.current_ip && domain.current_ip.includes(search))
+            (domain.current_ip && domain.current_ip.includes(search)) ||
+            (domain.interface && domain.interface.toLowerCase().includes(search)) ||
+            (domain.gateway && domain.gateway.includes(search))
         );
-    }    
+    }
+    targetsShown = domains.map(d => d.id);
+    updateBulkBar();
     if (domains.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="loading">No domains found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="loading">No domains found</td></tr>';
         return;
     }
     updateSortHeaders();
@@ -949,11 +954,14 @@ function renderDomains(filterText = '') {
         const hue = policyHue(policie.id);
         const isCollapsed = !isSearching && state.collapsedPolicies.has(policie.id);
 
+        const groupIds = policie_domains.map(d => d.id);
+        const groupPicked = groupIds.filter(id => targetSelection.has(id)).length;
+        const groupCheck = groupIds.length ? `<input type="checkbox" class="group-check" data-policy="${policie.id}" title="${escapeHtml(t('Select the targets of this policy'))}"${groupPicked && groupPicked === groupIds.length ? ' checked' : ''}${groupPicked && groupPicked < groupIds.length ? ' data-partial="1"' : ''}>` : '';
         let groupHtml = `<tr class="policy-group" style="--policy-hue:${hue}">
-            <td colspan="7">
+            <td colspan="8">
                 <div class="policy-group-row">
                     <div class="policy-group-left">
-                        <button class="policy-toggle" data-click="togglePolicy" data-id="${policie.id}" title="${isCollapsed ? 'Expand' : 'Collapse'}">${isCollapsed ? '▸' : '▾'}</button><span class="policy-dot"></span><span class="policy-name" data-click="togglePolicy" data-id="${policie.id}" data-notr>${escapeHtml(policie.name)}</span>${policie.description ? `<span class="policy-desc" data-notr>${escapeHtml(policie.description)}</span>` : ''}
+                        ${groupCheck}<button class="policy-toggle" data-click="togglePolicy" data-id="${policie.id}" title="${isCollapsed ? 'Expand' : 'Collapse'}">${isCollapsed ? '▸' : '▾'}</button><span class="policy-dot"></span><span class="policy-name" data-click="togglePolicy" data-id="${policie.id}" data-notr>${escapeHtml(policie.name)}</span>${policie.description ? `<span class="policy-desc" data-notr>${escapeHtml(policie.description)}</span>` : ''}
                     </div>
                     <div class="policy-meta">
                         <span class="meta-mark">mark <code>${escapeHtml(policie.mark_hex)}</code></span>
@@ -971,7 +979,9 @@ function renderDomains(filterText = '') {
             policie_domains.forEach(domain => {
                 const status = domainStatus(domain);
                 const lastCheckDate = toLocalDate(domain.last_check);
-                const rowHtml = `<tr class="domain-row">
+                const picked = targetSelection.has(domain.id);
+                const rowHtml = `<tr class="domain-row${picked ? ' is-picked' : ''}">
+                    <td class="cell-check"><input type="checkbox" class="target-check" data-id="${domain.id}" aria-label="${escapeHtml(t('Select'))}"${picked ? ' checked' : ''}></td>
                     <td class="cell-domain" data-label="Target" data-col="target"><button type="button" class="target-link" data-click="openTarget" data-id="${domain.id}" title="Target details" data-notr>${escapeHtml(domain.domain)}</button></td>
                     <td class="cell-mono" data-label="Interface" data-col="interface">${escapeHtml(domain.interface) || '<span class="muted">—</span>'}</td>
                     <td class="cell-mono" data-label="Gateway" data-col="gateway">${escapeHtml(domain.gateway) || '<span class="muted">—</span>'}</td>
@@ -986,10 +996,16 @@ function renderDomains(filterText = '') {
                 html += rowHtml;
             });
         } else {
-            html += `<tr><td colspan="7" class="loading">No domains in this policy</td></tr>`;
+            html += `<tr><td colspan="8" class="loading">No domains in this policy</td></tr>`;
         }
     });
     tbody.innerHTML = html;
+    // a half-selected policy: the checkbox shows a dash
+    tbody.querySelectorAll('.group-check[data-partial]').forEach(el => { el.indeterminate = true; });
+    const all = document.getElementById('targetsCheckAll');
+    const pickedShown = targetsShown.filter(id => targetSelection.has(id)).length;
+    all.checked = pickedShown > 0 && pickedShown === targetsShown.length;
+    all.indeterminate = pickedShown > 0 && pickedShown < targetsShown.length;
 }
 
 function togglePolicyCollapse(policyId) {
@@ -1000,6 +1016,145 @@ function togglePolicyCollapse(policyId) {
     }
     renderDomains(document.getElementById('searchDomains').value);
 }
+
+// ---- several targets at once: the selection lives here and survives search, sorting and collapsed policies
+const targetSelection = new Set();
+let targetsShown = [];
+let lastPickedTarget = null;
+
+function rerenderTargets() {
+    renderDomains(document.getElementById('searchDomains').value);
+}
+
+function updateBulkBar() {
+    // a target that was deleted elsewhere drops out of the selection
+    for (const id of targetSelection) {
+        if (!state.domains.some(d => d.id === id)) targetSelection.delete(id);
+    }
+    const bar = document.getElementById('bulkBar');
+    const onTargets = document.getElementById('domainsTab').classList.contains('active');
+    bar.hidden = !targetSelection.size || !onTargets;
+    document.body.classList.toggle('has-bulk', !bar.hidden);
+    document.getElementById('bulkCount').textContent = t('Selected: {0}', targetSelection.size);
+}
+
+document.getElementById('domainsList').addEventListener('click', (e) => {
+    const box = e.target.closest('.target-check');
+    if (box) {
+        const id = +box.dataset.id;
+        // Shift+click picks the whole range between the last click and this one, in the order on the screen
+        if (e.shiftKey && lastPickedTarget !== null) {
+            const order = [...document.querySelectorAll('#domainsList .target-check')].map(el => +el.dataset.id);
+            const from = order.indexOf(lastPickedTarget);
+            const to = order.indexOf(id);
+            if (from !== -1 && to !== -1) {
+                for (const rangeId of order.slice(Math.min(from, to), Math.max(from, to) + 1)) {
+                    if (box.checked) targetSelection.add(rangeId); else targetSelection.delete(rangeId);
+                }
+            }
+        }
+        if (box.checked) targetSelection.add(id); else targetSelection.delete(id);
+        lastPickedTarget = id;
+        rerenderTargets();
+        return;
+    }
+    const group = e.target.closest('.group-check');
+    if (group) {
+        const policy = state.policies.find(p => p.id === +group.dataset.policy);
+        const ids = state.domains.filter(d => d.policy_name === policy.name && targetsShown.includes(d.id)).map(d => d.id);
+        for (const id of ids) {
+            if (group.checked) targetSelection.add(id); else targetSelection.delete(id);
+        }
+        rerenderTargets();
+    }
+});
+
+document.getElementById('targetsCheckAll').addEventListener('click', (e) => {
+    for (const id of targetsShown) {
+        if (e.target.checked) targetSelection.add(id); else targetSelection.delete(id);
+    }
+    rerenderTargets();
+});
+
+function clearTargetSelection() {
+    targetSelection.clear();
+    lastPickedTarget = null;
+    rerenderTargets();
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !targetSelection.size || modalStack.length) return;
+    clearTargetSelection();
+});
+
+async function runBulk(payload, label) {
+    const ids = [...targetSelection];
+    const r = await api({ action: 'bulkTargets', ids, ...payload });
+    if (r.error) {
+        showToast(t(r.error), 'error', 8000);
+        return r;
+    }
+    let text = t('{0}: {1} targets changed', t(label), r.changed);
+    if (r.skipped && r.skipped.length) {
+        text += '. ' + t('Skipped: {0}', r.skipped.map(([domain, why]) => domain + ' (' + t(why) + ')').join(', '));
+    }
+    showToast(text, r.skipped && r.skipped.length ? 'warning' : 'success', r.skipped && r.skipped.length ? 12000 : 5000);
+    targetSelection.clear();
+    lastPickedTarget = null;
+    await loadData();
+    pollJob();
+    return r;
+}
+
+function openBulk() {
+    document.getElementById('bulkNote').textContent = t('Selected targets: {0}. Only what you set here changes.', targetSelection.size);
+    document.getElementById('bulkIfaceMode').value = 'keep';
+    document.getElementById('bulkGwMode').value = 'keep';
+    document.getElementById('bulkInterface').hidden = true;
+    document.getElementById('bulkGateway').hidden = true;
+    document.getElementById('bulkGateway').value = '';
+    fillInterfaceSelect('bulkInterface', '');
+    document.getElementById('bulkPolicy').innerHTML = `<option value="">${escapeHtml(t('Keep as is'))}</option>` + state.policies
+        .filter(p => p.name !== 'DELETED')
+        .map(p => `<option value="${p.id}">${escapeHtml(p.name + (p.description ? ' — ' + p.description : ''))}</option>`).join('');
+    document.getElementById('bulkMsg').textContent = '';
+    document.getElementById('bulkModal').style.display = 'block';
+}
+
+document.getElementById('bulkIfaceMode').addEventListener('change', (e) => { document.getElementById('bulkInterface').hidden = e.target.value !== 'set'; });
+document.getElementById('bulkGwMode').addEventListener('change', (e) => { document.getElementById('bulkGateway').hidden = e.target.value !== 'set'; });
+document.getElementById('bulkClose').addEventListener('click', () => { document.getElementById('bulkModal').style.display = 'none'; });
+
+document.getElementById('bulkSave').addEventListener('click', async () => {
+    const msg = document.getElementById('bulkMsg');
+    const set = {};
+    const policy = document.getElementById('bulkPolicy').value;
+    const ifaceMode = document.getElementById('bulkIfaceMode').value;
+    const gwMode = document.getElementById('bulkGwMode').value;
+    if (policy !== '') set.policy_id = +policy;
+    if (ifaceMode === 'set') set.interface = document.getElementById('bulkInterface').value;
+    if (ifaceMode === 'clear') set.interface = '';
+    if (gwMode === 'set') set.gateway = document.getElementById('bulkGateway').value.trim();
+    if (gwMode === 'clear') set.gateway = '';
+    if (ifaceMode === 'set' && !set.interface) { msg.textContent = t('Choose an interface'); return; }
+    if (gwMode === 'set' && !set.gateway) { msg.textContent = t('Enter the gateway'); return; }
+    if (!Object.keys(set).length) { msg.textContent = t('Nothing to change'); return; }
+    msg.textContent = '';
+    const r = await runBulk({ set }, 'Edit');
+    if (!r.error) document.getElementById('bulkModal').style.display = 'none';
+    else msg.textContent = t(r.error);
+});
+
+document.getElementById('bulkBar').addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-bulk]');
+    if (!btn) return;
+    const what = btn.dataset.bulk;
+    if (what === 'clear') clearTargetSelection();
+    if (what === 'edit') openBulk();
+    if (what === 'enable') runBulk({ set: { enabled: 1 } }, 'Enable');
+    if (what === 'disable') runBulk({ set: { enabled: 0 } }, 'Disable');
+    if (what === 'delete' && await showConfirm(t('Delete {0} targets? This can\'t be undone.', targetSelection.size), 'Delete')) runBulk({ delete: 1 }, 'Delete');
+});
 
 function renderPolicies(filterText = '') {
     let tbody = document.getElementById('policiesList');
@@ -4216,7 +4371,7 @@ let interfacesData = [];
 let interfaceChoices = [];
 const TUNNEL_TYPES = ['Wireguard', 'OpenVPN', 'IPsec', 'L2TP', 'PPTP', 'SSTP', 'Gre', 'Ipip', 'Eoip'];
 const HIDDEN_TYPES = ['Port', 'WifiMaster', 'AccessPoint', 'WifiStation', 'Bridge'];
-const INTERFACE_SELECTS = ['domainInterface', 'catalogInterface', 'listInterface', 'panelNetInterface', 'dpiIsp', 'dpiTun'];
+const INTERFACE_SELECTS = ['bulkInterface', 'domainInterface', 'catalogInterface', 'listInterface', 'panelNetInterface', 'dpiIsp', 'dpiTun'];
 
 // Fills an interface drop-down with the router's interfaces (system names such as nwg0, eth3) and picks the value
 function fillInterfaceSelect(id, value) {

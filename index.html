@@ -77,7 +77,7 @@
                 <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h10a4 4 0 0 1 0 8H8"></path><path d="M7 5L4 8l3 3"></path></svg></span>
                 <div class="brand-text">
                     <h1>Keenetic DNS Router</h1>
-                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.41.4</button>
+                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.42.1</button>
                 </div>
             </div>
             <nav class="tabs" id="mainNav" aria-label="Sections">
@@ -143,6 +143,7 @@
             <table id="domainsTable">
                 <thead>
                     <tr>
+                        <th class="col-check"><input type="checkbox" id="targetsCheckAll" title="Select all shown targets" aria-label="Select all shown targets"></th>
                         <th class="th-sort" data-sort="target" tabindex="0">Target</th>
                         <th class="th-sort" data-sort="interface" tabindex="0">Interface</th>
                         <th class="th-sort" data-sort="gateway" tabindex="0">Gateway</th>
@@ -1136,6 +1137,57 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
 
     <!-- Детали интерфейса - в первую очередь WireGuard-пиры (трафик,
          рукопожатие, онлайн ли) и точка назначения туннеля. -->
+    <div class="bulk-bar" id="bulkBar" hidden>
+        <span class="bulk-count" id="bulkCount"></span>
+        <button type="button" class="btn btn-small btn-primary" data-bulk="edit">Edit</button>
+        <button type="button" class="btn btn-small" data-bulk="enable">Enable</button>
+        <button type="button" class="btn btn-small" data-bulk="disable">Disable</button>
+        <button type="button" class="btn btn-small btn-danger" data-bulk="delete">Delete</button>
+        <button type="button" class="icon-btn" data-bulk="clear" title="Clear the selection (Esc)" aria-label="Clear the selection">✕</button>
+    </div>
+
+    <div id="bulkModal" class="modal">
+        <div class="modal-content target-content">
+            <div class="modal-head">
+                <h2>Edit the targets</h2>
+                <button type="button" class="close" id="bulkClose" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="card-note" id="bulkNote"></p>
+                <div class="form-group">
+                    <label for="bulkPolicy">Policy:</label>
+                    <select id="bulkPolicy"></select>
+                </div>
+                <div id="bulkExitBox">
+                    <div class="form-row catalog-exit">
+                        <div class="form-group">
+                            <label for="bulkIfaceMode">Interface:</label>
+                            <select id="bulkIfaceMode">
+                                <option value="keep">Keep as is</option>
+                                <option value="set">Set</option>
+                                <option value="clear">Leave empty</option>
+                            </select>
+                            <select id="bulkInterface" hidden></select>
+                        </div>
+                        <div class="form-group">
+                            <label for="bulkGwMode">Gateway:</label>
+                            <select id="bulkGwMode">
+                                <option value="keep">Keep as is</option>
+                                <option value="set">Set</option>
+                                <option value="clear">Leave empty</option>
+                            </select>
+                            <input type="text" id="bulkGateway" placeholder="192.168.1.1" autocomplete="off" spellcheck="false" hidden>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-foot">
+                <span class="foot-msg" id="bulkMsg"></span>
+                <button type="button" class="btn btn-primary" id="bulkSave">Apply</button>
+            </div>
+        </div>
+    </div>
+
     <div id="staticRouteModal" class="modal">
         <div class="modal-content target-content">
             <div class="modal-head">

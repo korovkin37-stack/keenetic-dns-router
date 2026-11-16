@@ -1,5 +1,5 @@
 <?php
-const APP_VERSION = '5.41.4';
+const APP_VERSION = '5.42.1';
 const COOKIE_NAME = 'krdns_auth';
 const COOKIE_TTL = 604800;
 
@@ -1053,6 +1053,75 @@ function deleteDomain($in) {
     });
 }
 
+// Several targets at once: set the exit (interface/gateway), move to another policy, switch on/off or delete.
+// $in['set'] holds only what changes: 'interface' and 'gateway' ('' clears), 'policy_id', 'enabled'.
+// One transaction; targets that would be left without an exit or already exist in the new policy are skipped.
+function bulkTargets($in) {
+    $ids = array_values(array_unique(array_filter(array_map('intval', (array)($in['ids'] ?? [])))));
+    if (!$ids) fail('Select at least one target');
+    $delete = !empty($in['delete']);
+    $set = is_array($in['set'] ?? null) ? $in['set'] : [];
+    if (!$delete && !$set) fail('Nothing to change');
+    if (isset($set['interface'])) {
+        $set['interface'] = trim((string)$set['interface']);
+        if (!isValidInterface($set['interface'])) fail('Invalid interface name');
+    }
+    if (isset($set['gateway'])) {
+        $set['gateway'] = trim((string)$set['gateway']);
+        if (!isValidGateway($set['gateway'])) fail('Invalid gateway IP');
+    }
+    if (isset($set['enabled'])) $set['enabled'] = toFlag($set['enabled']);
+
+    return withDb(function ($db) use ($ids, $delete, $set, $in) {
+        if (isset($set['policy_id'])) {
+            $set['policy_id'] = (int)$set['policy_id'];
+            if (!$db->querySingle("SELECT id FROM policies WHERE name != 'DELETED' AND id = " . $set['policy_id'])) fail('Policy not found');
+        }
+        $find = $db->prepare('SELECT id, domain, policy_id, interface, gateway, enabled FROM domains WHERE id = :id');
+        $remove = $db->prepare('DELETE FROM domains WHERE id = :id');
+        $update = $db->prepare("UPDATE domains SET policy_id = :pid, interface = :iface, gateway = :gw, enabled = :enabled, updated_at = datetime('now') WHERE id = :id");
+        $changed = [];
+        $skipped = [];
+        $db->exec('BEGIN');
+        foreach ($ids as $id) {
+            $find->reset();
+            $find->bindValue(':id', $id, SQLITE3_INTEGER);
+            $row = $find->execute()->fetchArray(SQLITE3_ASSOC);
+            if (!$row) continue;
+            if ($delete) {
+                $remove->reset();
+                $remove->bindValue(':id', $id, SQLITE3_INTEGER);
+                $remove->execute();
+                $changed[] = $id;
+                continue;
+            }
+            $interface = array_key_exists('interface', $set) ? $set['interface'] : (string)$row['interface'];
+            $gateway = array_key_exists('gateway', $set) ? $set['gateway'] : (string)$row['gateway'];
+            $policyId = $set['policy_id'] ?? (int)$row['policy_id'];
+            if ($interface === '' && $gateway === '') {
+                $skipped[] = [$row['domain'], 'no interface and no gateway left'];
+                continue;
+            }
+            if ($policyId !== (int)$row['policy_id'] && targetExists($db, $row['domain'], $policyId, $id)) {
+                $skipped[] = [$row['domain'], 'already in that policy'];
+                continue;
+            }
+            $update->reset();
+            $update->bindValue(':pid', $policyId, SQLITE3_INTEGER);
+            $update->bindValue(':iface', $interface !== '' ? $interface : null, SQLITE3_TEXT);
+            $update->bindValue(':gw', $gateway !== '' ? $gateway : null, SQLITE3_TEXT);
+            $update->bindValue(':enabled', $set['enabled'] ?? (int)$row['enabled'], SQLITE3_INTEGER);
+            $update->bindValue(':id', $id, SQLITE3_INTEGER);
+            $update->execute();
+            $changed[] = $id;
+        }
+        $db->exec('COMMIT');
+        // the routes follow through one task; a deleted target needs no resolving, only the apply
+        $job = $changed ? queueTargets($db, $in, $delete ? [] : $changed) : [];
+        return ['success' => true, 'changed' => count($changed), 'skipped' => $skipped] + $job;
+    });
+}
+
 function saveTargetDns($in) {
     $id = (int)($in['id'] ?? 0);
     if ($id <= 0) fail('Valid ID is required');
@@ -1703,6 +1772,7 @@ function coreHandlers() {
         'addDomain'    => 'addDomain',
         'updateDomain' => 'updateDomain',
         'deleteDomain' => 'deleteDomain',
+        'bulkTargets'  => 'bulkTargets',
         'saveTargetDns' => 'saveTargetDns',
         'refreshTarget' => 'refreshTarget',
         'syncPolicies' => fn() => withDb(fn($db) => locked(fn() => doSyncPolicies($db))),
