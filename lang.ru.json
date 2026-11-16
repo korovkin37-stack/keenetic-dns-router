@@ -1524,6 +1524,8 @@
 "Compares the routing tables of the router with the targets and lists in the database. Only reads: Apply routes fixes what differs.": "Сравнивает таблицы маршрутизации роутера с целями и списками в базе. Только читает: «Применить маршруты» исправит расхождения.",
 "Not checked yet": "Ещё не проверялось",
 "{0} differences between the tables and the database": "Расхождений между таблицами и базой: {0}",
-"Tasks are running: {0}": "Выполняется задач: {0}"
+"Tasks are running: {0}": "Выполняется задач: {0}",
+"The routes are being written right now: stop anyway?": "Маршруты прямо сейчас записываются: всё равно остановить?",
+"The routes are being written right now. Kill the task anyway? The tables may stay half updated until the next apply (\"Tables and database\" shows what differs).": "Маршруты прямо сейчас записываются. Всё равно убить задачу? Таблицы могут остаться обновлёнными наполовину до следующего применения («Таблицы и база» покажет расхождения)."
 }
 }

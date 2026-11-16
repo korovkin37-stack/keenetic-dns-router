@@ -1,5 +1,5 @@
 <?php
-const APP_VERSION = '5.41.2';
+const APP_VERSION = '5.41.4';
 const COOKIE_NAME = 'krdns_auth';
 const COOKIE_TTL = 604800;
 
@@ -897,8 +897,11 @@ function routePlan(SQLite3 $db) {
 // When nothing differs there is no write and no root call at all. The tables are never emptied,
 // so traffic of a target keeps its route the whole time.
 function doApplyRoutes(SQLite3 $db) {
+    $log = function_exists('jobLog') && (jobRead('job')['state'] ?? '') === 'running' ? 'jobLog' : fn($text) => null;
+    $log('apply: reading the tables');
     $plan = routePlan($db);
     if (isset($plan['error'])) return ['success' => false, 'error' => $plan['error']];
+    $log('apply: ' . count($plan['replace']) . ' routes to write, ' . count($plan['cleanup']) . ' to remove or fix');
 
     $route_errors = 0;
     $route_error = '';

@@ -2,6 +2,15 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.41.4
+- Fixed tasks started from the panel hanging forever with an empty log: the background process wrote its output into a file named after the owner of app.php, so once a hook (root) had created that file the web user could not open it, and the shell did not start the task at all. The file is now named after the user that starts the process.
+- Background processes are started with `setsid`: a restart of php-fpm no longer takes them down.
+
+## 5.41.3
+- A running task can be killed at any step, also while the routes are written (with a confirmation): the process and what it runs (su, ip, curl) are killed as root.
+- A task whose process never came up no longer hangs as "running" forever: the shell around it is watched from the first second, and a task without a process for a minute is closed.
+- The task log starts with the pid of the process and shows the steps of applying (reading the tables, how many routes to write and to fix).
+
 ## 5.41.2
 - The "Tasks" button spins while a task runs or waits in the queue; its tooltip says how many.
 

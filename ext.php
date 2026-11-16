@@ -1753,8 +1753,12 @@ function startBackground($arguments, $then = '') {
     $cmd = $base . $arguments;
     // $then runs after the process ends however it ends (even killed), so a dead process cannot leave the queue standing
     if ($then !== '') $cmd = 'sh -c ' . escapeshellarg($cmd . '; ' . $base . $then);
-    // the log belongs to whoever starts the process: a hook (root) and the panel (web user) cannot overwrite each other's file
-    exec('(' . $cmd . ' >/tmp/dns-router-lists-' . getmyuid() . '.log 2>&1 & echo $!)', $out);
+    // The log is named after the uid of the process that starts it ($(id -u), not getmyuid(), which is the owner of app.php):
+    // a file left by root cannot be opened by the web user, and then the shell would not start the command at all.
+    // setsid takes the process out of php-fpm's process group, so a restart of php-fpm does not kill it.
+    $log = '/tmp/dns-router-lists-$(id -u).log';
+    $detach = trim((string)shell_exec('command -v setsid 2>/dev/null')) !== '' ? 'setsid ' : '';
+    exec('(' . $detach . $cmd . ' </dev/null >' . $log . ' 2>&1 & echo $!)', $out);
     return (int)($out[0] ?? 0);
 }
 
@@ -2175,7 +2179,9 @@ function jobLock() {
 function jobAlive($job) {
     if (!$job || $job['state'] !== 'running') return false;
     $pid = (int)(jobRead('jobpid')['pid'] ?? 0);
-    return $pid === 0 || is_dir('/proc/' . $pid);
+    // no pid yet: the process is being started; after a minute without one it never came up
+    if ($pid === 0) return $job['started'] > time() - 60;
+    return is_dir('/proc/' . $pid);
 }
 
 // Finished jobs are kept (newest first) with the tail of their log: the task manager shows them
@@ -2210,7 +2216,7 @@ function jobReadChecked() {
     $job = jobRead('job');
     if (!$job) return null;
     $pid = (int)(jobRead('jobpid')['pid'] ?? 0);
-    if ($job['state'] === 'running' && $pid > 0 && !is_dir('/proc/' . $pid)) {
+    if ($job['state'] === 'running' && !jobAlive($job)) {
         jobSet(['state' => 'error', 'error' => 'The update process stopped unexpectedly', 'finished' => time()]);
         jobLog('the update process stopped unexpectedly');
         $db = getDb();
@@ -2315,6 +2321,11 @@ function jobPrepare(SQLite3 $db, $kind, $source, array $params = []) {
 
 function jobSpawn(SQLite3 $db, $kind, array $ids) {
     $pid = startBackground('job ' . $kind . ' ' . implode(',', $ids), 'next ' . jobRead('job')['id']);
+    if ($pid > 0) {
+        // the shell around the job process: alive from the first second, the job process puts its own pid in later
+        jobWrite('jobpid', ['pid' => $pid]);
+        jobLog('process started, pid ' . $pid);
+    }
     if ($pid === 0) {
         jobSet(['state' => 'error', 'error' => 'Could not start the update process: check that php-cli is installed', 'finished' => time()]);
         foreach ($ids as $id) listsSetStatus($db, $id, 'Could not start the update process', gmdate('Y-m-d H:i:s'));
@@ -2429,11 +2440,12 @@ function doCancelJob(SQLite3 $db, $in = []) {
     }
     $job = jobReadChecked();
     if (!$job || $job['state'] !== 'running') return ['success' => true];
-    if ($job['step'] === 'apply') fail('The routes are being written right now: it cannot be stopped halfway');
+    if ($job['step'] === 'apply' && empty($in['force'])) fail('The routes are being written right now: stop anyway?', 409);
     $pid = (int)(jobRead('jobpid')['pid'] ?? 0);
-    if ($pid > 0) exec('kill ' . $pid . ' 2>&1');
+    // the process and what it runs (su, ip, curl) may belong to root when a hook started it
+    if ($pid > 0) execPipelineAsRoot('pkill -9 -P ' . $pid . ' 2>/dev/null; kill -9 ' . $pid . ' 2>/dev/null; true');
     jobSet(['state' => 'cancelled', 'finished' => time()]);
-    jobLog('cancelled by the user');
+    jobLog($job['step'] === 'apply' ? 'killed by the user while writing the routes: check "Tables and database"' : 'cancelled by the user');
     doCancelLists($db, []);
     jobWrite('stage', null);
     jobFinished();

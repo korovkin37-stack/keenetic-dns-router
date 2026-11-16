@@ -1,7 +1,7 @@
 // app.js - клиентская логика
 
 const API = '/app.php';
-const JS_VERSION = '5.41.2'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.41.4'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -2038,7 +2038,7 @@ function renderTasks() {
         html += taskSection(t('Running now'), 0, taskHtml({
             key: 'run', lead: '<span class="task-spin"></span>', title: t(JOB_TITLES[job.kind]),
             meta: t(JOB_SOURCES[job.source] || job.source || 'Panel') + (job.started ? ' · ' + t('started {0}', jobTimeText(job.started)) : ''),
-            badge, steps: jobStepsHtml(job), note: jobNoteText(job), log: job.log, hasLog: true, stoppable: job.step !== 'apply',
+            badge, steps: jobStepsHtml(job), note: jobNoteText(job), log: job.log, hasLog: true, stoppable: true,
         }));
     } else {
         html += `<p class="card-note task-idle">${escapeHtml(t('Nothing is running'))}</p>`;
@@ -2096,8 +2096,12 @@ document.getElementById('jobTasks').addEventListener('click', async (e) => {
     }
     if (act) {
         if (act.dataset.act === 'stop') {
-            const r = await api({ action: 'cancelJob' });
-            if (r.error) showToast(t(r.error), 'warning', 6000);
+            let r = await api({ action: 'cancelJob' });
+            // while the routes are written the task is only killed on purpose: the tables may stay half done until the next apply
+            if (r.error && jobShown && jobShown.step === 'apply' && confirm(t('The routes are being written right now. Kill the task anyway? The tables may stay half updated until the next apply ("Tables and database" shows what differs).'))) {
+                r = await api({ action: 'cancelJob', force: 1 });
+            }
+            if (r.error && !(jobShown && jobShown.step === 'apply')) showToast(t(r.error), 'warning', 6000);
             pollJob();
         } else if (act.dataset.act === 'clear') {
             await api({ action: 'clearJobHistory' });
