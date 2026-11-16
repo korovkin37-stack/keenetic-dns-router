@@ -1,7 +1,7 @@
 // app.js - клиентская логика
 
 const API = '/app.php';
-const JS_VERSION = '5.41.0'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.41.1'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -4101,12 +4101,23 @@ async function checkRouteDrift() {
     } catch (error) {
         driftData = { success: false, error: error.message };
     }
+    const line = document.getElementById('driftCardLine');
+    const apply = document.getElementById('applyRoutes');
     if (!driftData.success) {
         value.textContent = '—';
         value.className = 'dash-chip-value';
+        line.className = 'res-row res-bad';
+        line.lastElementChild.textContent = t(driftData.error || 'Check failed');
+        delete apply.dataset.drift;
     } else {
         value.textContent = driftData.total ? t('{0} differ', driftData.total) : t('in sync');
         value.className = 'dash-chip-value ' + (driftData.total ? 'warn' : 'ok');
+        line.className = 'res-row ' + (driftData.total ? 'res-warn' : 'res-ok');
+        line.lastElementChild.textContent = driftData.total
+            ? t('{0} differences between the tables and the database', driftData.total)
+            : t('The tables match the database: {0} routes checked.', driftData.routes);
+        // the header button shows that applying would change something
+        if (driftData.total) apply.dataset.drift = driftData.total; else delete apply.dataset.drift;
     }
     if (document.getElementById('driftModal').style.display === 'block') renderDrift();
 }
@@ -4162,11 +4173,14 @@ function renderDrift() {
     list.innerHTML = html;
 }
 
-document.getElementById('dashDriftChip').addEventListener('click', () => {
+function openDrift() {
     renderDrift();
     document.getElementById('driftModal').style.display = 'block';
     checkRouteDrift();
-});
+}
+document.getElementById('dashDriftChip').addEventListener('click', openDrift);
+document.getElementById('driftCardOpen').addEventListener('click', openDrift);
+document.getElementById('driftCardCheck').addEventListener('click', checkRouteDrift);
 document.getElementById('driftClose').addEventListener('click', () => { document.getElementById('driftModal').style.display = 'none'; });
 document.getElementById('driftRecheck').addEventListener('click', checkRouteDrift);
 document.getElementById('driftApply').addEventListener('click', () => {

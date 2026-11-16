@@ -1520,6 +1520,9 @@
 "The first {0} are shown.": "Показаны первые {0}.",
 "targets": "цели",
 "in the router": "в роутере",
-"must be": "должно быть"
+"must be": "должно быть",
+"Compares the routing tables of the router with the targets and lists in the database. Only reads: Apply routes fixes what differs.": "Сравнивает таблицы маршрутизации роутера с целями и списками в базе. Только читает: «Применить маршруты» исправит расхождения.",
+"Not checked yet": "Ещё не проверялось",
+"{0} differences between the tables and the database": "Расхождений между таблицами и базой: {0}"
 }
 }

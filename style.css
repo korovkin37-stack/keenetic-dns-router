@@ -3290,3 +3290,9 @@ button.version-badge.has-update::after { content: ' ↑'; }
 .drift-table .res-row { padding: 3px 0; }
 .drift-table code { font-family: var(--font-mono, ui-monospace, monospace); }
 .drift-who { color: var(--muted); }
+#driftCard .res-row { font-size: 13px; }
+#applyRoutes[data-drift] { position: relative; }
+#applyRoutes[data-drift]::after {
+    content: attr(data-drift); position: absolute; top: -7px; right: -7px; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box;
+    border-radius: 9px; background: var(--led-amber, #e0a030); color: #1a1a1a; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+}

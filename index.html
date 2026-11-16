@@ -77,7 +77,7 @@
                 <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h10a4 4 0 0 1 0 8H8"></path><path d="M7 5L4 8l3 3"></path></svg></span>
                 <div class="brand-text">
                     <h1>Keenetic DNS Router</h1>
-                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.41.0</button>
+                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.41.1</button>
                 </div>
             </div>
             <nav class="tabs" id="mainNav" aria-label="Sections">
@@ -440,6 +440,17 @@
         </div>
 
         <div id="diagTab" class="tab-content">
+            <div class="tools-section" id="driftCard">
+                <div class="card-head">
+                    <h3>Tables and database <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Compares the routing tables of the router with the targets and lists in the database. Only reads: Apply routes fixes what differs.">i</span></h3>
+                    <div class="card-actions">
+                        <button type="button" class="btn btn-small" id="driftCardCheck">Check</button>
+                        <button type="button" class="btn btn-small" id="driftCardOpen">Details</button>
+                    </div>
+                </div>
+                <div class="res-row" id="driftCardLine"><i></i><span>Not checked yet</span></div>
+            </div>
+
             <div class="tools-section dpi-card" id="dpiCard">
                 <div class="card-head">
                     <h3>DPI check <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Finds what the provider blocks: spoofed DNS, TLS reset by SNI, connections frozen after 16-20 KB.
