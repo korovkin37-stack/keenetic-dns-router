@@ -2,6 +2,9 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.41.2
+- The "Tasks" button spins while a task runs or waits in the queue; its tooltip says how many.
+
 ## 5.41.1
 - The table check is easier to find: a "Tables and database" card at the top of Diagnostics, and a counter on the "Apply routes" button when applying would change something.
 

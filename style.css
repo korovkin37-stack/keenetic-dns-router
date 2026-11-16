@@ -3296,3 +3296,9 @@ button.version-badge.has-update::after { content: ' ↑'; }
     content: attr(data-drift); position: absolute; top: -7px; right: -7px; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box;
     border-radius: 9px; background: var(--led-amber, #e0a030); color: #1a1a1a; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
 }
+#jobLogBtn.has-jobs { display: inline-flex; align-items: center; gap: 8px; border-color: var(--accent); }
+#jobLogBtn.has-jobs::before {
+    content: ''; flex: 0 0 12px; width: 12px; height: 12px; box-sizing: border-box;
+    border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%; animation: spin .9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) { #jobLogBtn.has-jobs::before { animation-duration: 3s; } }

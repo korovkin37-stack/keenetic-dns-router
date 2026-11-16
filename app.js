@@ -1,7 +1,7 @@
 // app.js - клиентская логика
 
 const API = '/app.php';
-const JS_VERSION = '5.41.1'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.41.2'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -1891,6 +1891,12 @@ function renderJobPill() {
     const job = jobShown;
     const running = !!job && job.state === 'running';
     document.body.classList.toggle('job-running', running);
+    // the Tasks button spins while a task runs or waits in the queue
+    const jobsBtn = document.getElementById('jobLogBtn');
+    if (jobsBtn.dataset.title === undefined) jobsBtn.dataset.title = jobsBtn.title;
+    const busy = running || jobQueue.length > 0;
+    jobsBtn.classList.toggle('has-jobs', busy);
+    jobsBtn.title = busy ? t('Tasks are running: {0}', (running ? 1 : 0) + jobQueue.length) : jobsBtn.dataset.title;
     for (const id of ['refreshAll', 'applyRoutes', 'checkApply', 'syncListsBtn']) {
         const button = document.getElementById(id);
         if (button.dataset.title === undefined) button.dataset.title = button.title;
