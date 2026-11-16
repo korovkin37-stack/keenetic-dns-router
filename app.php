@@ -1,5 +1,5 @@
 <?php
-const APP_VERSION = '5.42.1';
+const APP_VERSION = '5.45.1';
 const COOKIE_NAME = 'krdns_auth';
 const COOKIE_TTL = 604800;
 
@@ -125,7 +125,8 @@ function getDb() {
         while ($col = $res->fetchArray(SQLITE3_ASSOC)) $have[$col['name']] = true;
         if ($have) {
             // ip_sources: which DNS server returned each IP; dns_skip: servers not used for this target
-            foreach (['ip_sources', 'dns_skip'] as $name) {
+            // backup_interface/backup_gateway: the backup exit, taken while the main one cannot carry traffic
+            foreach (['ip_sources', 'dns_skip', 'backup_interface', 'backup_gateway'] as $name) {
                 if (!isset($have[$name])) $db->exec("ALTER TABLE domains ADD COLUMN $name TEXT DEFAULT ''");
             }
         }
@@ -155,6 +156,11 @@ function getDb() {
         if (!isset($listCols['resolved'])) $db->exec("ALTER TABLE lists ADD COLUMN resolved TEXT DEFAULT ''");
         if (!isset($listCols['source'])) $db->exec("ALTER TABLE lists ADD COLUMN source TEXT DEFAULT ''");
         if (!isset($listCols['stats'])) $db->exec("ALTER TABLE lists ADD COLUMN stats TEXT DEFAULT ''");
+        // own lists: a link to a file or the pasted text
+        if (!isset($listCols['custom_url'])) $db->exec("ALTER TABLE lists ADD COLUMN custom_url TEXT DEFAULT ''");
+        if (!isset($listCols['backup_interface'])) $db->exec("ALTER TABLE lists ADD COLUMN backup_interface TEXT DEFAULT ''");
+        if (!isset($listCols['backup_gateway'])) $db->exec("ALTER TABLE lists ADD COLUMN backup_gateway TEXT DEFAULT ''");
+        if (!isset($listCols['custom_text'])) $db->exec("ALTER TABLE lists ADD COLUMN custom_text TEXT DEFAULT ''");
         // DPI runs live in the database: a folder next to it would be served by nginx when the database sits in the web folder
         $db->exec('CREATE TABLE IF NOT EXISTS dpi_runs (id TEXT PRIMARY KEY, started INTEGER NOT NULL, summary TEXT, data TEXT)');
         $oldDir = dirname($db_file) . '/dpi';
@@ -708,6 +714,60 @@ function doSyncPolicies(SQLite3 $db) {
     return ['success' => true, 'added' => $added, 'updated' => $updated, 'removed' => $removed];
 }
 
+// Which kernel interfaces cannot carry traffic now: Keenetic says "not connected", or its connectivity check
+// (ping-check) fails. Plus the subnets of every interface, to find the interface a gateway belongs to.
+function exitHealth() {
+    $names = [];
+    $down = [];
+    foreach ((array)rciGet('/rci/show/interface') as $key => $i) {
+        if (!is_array($i)) continue;
+        $id = (string)($i['id'] ?? $key);
+        $sys = (string)($i['system-name'] ?? '');
+        if ($sys === '' && preg_match('/^Wireguard(\d+)$/', $id, $m)) $sys = 'nwg' . $m[1];
+        if ($sys === '') continue;
+        $names[$id] = $sys;
+        if (($i['connected'] ?? '') === 'no') $down[$sys] = ['id' => $id, 'why' => 'not_connected', 'text' => $id . ' is not connected'];
+    }
+    foreach ((array)(rciGet('/rci/show/ping-check')['pingcheck'] ?? []) as $profile) {
+        foreach ((array)($profile['interface'] ?? []) as $id => $on) {
+            $sys = $names[$id] ?? null;
+            // a fresh profile says "fail" before its first ping: that is not a failure yet
+            $tries = (int)($on['successcount'] ?? 0) + (int)($on['failcount'] ?? 0);
+            if ($sys === null || ($on['status'] ?? '') !== 'fail' || $tries === 0 || isset($down[$sys])) continue;
+            $down[$sys] = ['id' => $id, 'why' => 'check', 'text' => $id . ' fails the connectivity check'];
+        }
+    }
+    $nets = [];
+    foreach (explode("\n", (string)shell_exec('/opt/sbin/ip -o -4 addr show 2>/dev/null')) as $line) {
+        if (preg_match('~^\d+:\s+(\S+)\s+inet\s+([\d.]+)/(\d+)~', $line, $m)) $nets[] = [preg_replace('/@.*/', '', $m[1]), ip2long($m[2]), (int)$m[3]];
+    }
+    return ['down' => $down, 'nets' => $nets];
+}
+
+// Is this kernel interface the main exit of a target or a list that has a backup? Then its fall matters.
+function failoverWatches(SQLite3 $db, $system) {
+    $health = ['down' => [], 'nets' => exitHealth()['nets']];
+    $rows = rows($db, "SELECT interface, gateway FROM domains WHERE enabled = 1 AND (backup_interface != '' OR backup_gateway != '')
+        UNION SELECT interface, gateway FROM lists WHERE enabled = 1 AND (backup_interface != '' OR backup_gateway != '')");
+    foreach ($rows as $row) {
+        if (exitInterface((string)$row['interface'], (string)$row['gateway'], $health) === $system) return true;
+    }
+    return false;
+}
+
+// The kernel interface an exit goes out through: the interface itself, or the one whose subnet holds the gateway.
+// The subnet is used and not "ip route get": with the tunnel down that would answer "through the provider".
+function exitInterface($interface, $gateway, array $health) {
+    if ($interface !== '') return $interface;
+    if ($gateway === '') return '';
+    $gw = ip2long($gateway);
+    foreach ($health['nets'] as [$dev, $net, $len]) {
+        $mask = $len === 0 ? 0 : (-1 << (32 - $len));
+        if ((($gw ^ $net) & $mask) === 0) return $dev;
+    }
+    return '';
+}
+
 // What the policy tables must hold (from the targets and lists in the database) next to what the kernel holds now,
 // and the ip commands that bring one to the other. Only reads: the diagnostics show it, doApplyRoutes() runs it.
 // Rules of Keenetic's own tables (keenetic_table) and the BGP table are never looked at.
@@ -723,9 +783,28 @@ function routePlan(SQLite3 $db) {
 
     $prefs = routePrefs($db);
 
+    // Health of the exits is asked only when somebody has a backup exit
+    $withBackup = $db->querySingle("SELECT COUNT(*) FROM domains WHERE backup_interface != '' OR backup_gateway != ''")
+        + $db->querySingle("SELECT COUNT(*) FROM lists WHERE backup_interface != '' OR backup_gateway != ''");
+    $health = $withBackup ? exitHealth() : ['down' => [], 'nets' => []];
+    // main interface => why it is down, its backup and who went there
+    $failover = [];
+    $pickExit = function ($kind, $id, $interface, $gateway, $backupInterface, $backupGateway) use ($health, &$failover) {
+        if ($backupInterface === '' && $backupGateway === '') return [$interface, $gateway];
+        $main = exitInterface($interface, $gateway, $health);
+        if ($main === '' || !isset($health['down'][$main])) return [$interface, $gateway];
+        // a backup that is down as well does not help: then the exit stays as it is
+        $backup = exitInterface($backupInterface, $backupGateway, $health);
+        if ($backup !== '' && isset($health['down'][$backup])) return [$interface, $gateway];
+        $failover[$main] ??= ['reason' => $health['down'][$main]['text'], 'main_id' => $health['down'][$main]['id'], 'why' => $health['down'][$main]['why'],
+            'backup' => $backup !== '' ? $backup : $backupGateway, 'targets' => [], 'lists' => []];
+        $failover[$main][$kind][] = (int)$id;
+        return [$backupInterface, $backupGateway];
+    };
+
     $sources = [];
     $domainCount = 0;
-    $result = $db->query('SELECT d.id, d.domain, d.policy_id, d.interface, d.gateway, d.current_ip FROM domains d WHERE d.enabled = 1 AND d.current_ip IS NOT NULL');
+    $result = $db->query('SELECT d.id, d.domain, d.policy_id, d.interface, d.gateway, d.backup_interface, d.backup_gateway, d.current_ip FROM domains d WHERE d.enabled = 1 AND d.current_ip IS NOT NULL');
     while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
         $policy_id = $row['policy_id'];
         if (!isset($policies[$policy_id])) continue;
@@ -739,6 +818,7 @@ function routePlan(SQLite3 $db) {
         $interface = isValidInterface($row['interface']) ? (string)$row['interface'] : '';
         $gateway   = isValidGateway($row['gateway']) ? (string)$row['gateway'] : '';
         if ($interface === '' && $gateway === '') continue;
+        [$interface, $gateway] = $pickExit('targets', $row['id'], $interface, $gateway, (string)$row['backup_interface'], (string)$row['backup_gateway']);
 
         $domainCount++;
         $sources[] = [
@@ -752,16 +832,18 @@ function routePlan(SQLite3 $db) {
     }
 
     $listCount = 0;
-    $result = $db->query("SELECT site, policy_id, interface, gateway, items FROM lists WHERE enabled = 1 AND items != '' AND (interface != '' OR gateway != '')");
+    $result = $db->query("SELECT id, site, policy_id, interface, gateway, backup_interface, backup_gateway, items FROM lists WHERE enabled = 1 AND items != '' AND (interface != '' OR gateway != '')");
     while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
         if (!isset($policies[$row['policy_id']])) continue;
         $listCount++;
+        $exit = $pickExit('lists', $row['id'], isValidInterface($row['interface']) ? (string)$row['interface'] : '', isValidGateway($row['gateway']) ? (string)$row['gateway'] : '',
+            (string)$row['backup_interface'], (string)$row['backup_gateway']);
         $sources[] = [
             'who'       => 'list ' . $row['site'],
             'policy'    => $policies[$row['policy_id']],
             'table'     => listTable($policies[$row['policy_id']]['our_table']),
-            'interface' => isValidInterface($row['interface']) ? (string)$row['interface'] : '',
-            'gateway'   => isValidGateway($row['gateway']) ? (string)$row['gateway'] : '',
+            'interface' => $exit[0],
+            'gateway'   => $exit[1],
             'ips'       => explode("\n", $row['items']),
         ];
     }
@@ -881,6 +963,7 @@ function routePlan(SQLite3 $db) {
     foreach ($want as $routes) $total += count($routes);
     return [
         'prefs'    => $prefs,
+        'failover' => $failover,
         'replace'  => $replace,
         'cleanup'  => $cleanup,
         'drift'    => $drift,
@@ -926,6 +1009,18 @@ function doApplyRoutes(SQLite3 $db) {
         }
     }
     setSetting($db, 'pref_applied', $plan['prefs']['targets'] . ' ' . $plan['prefs']['lists']);
+
+    // The backup exits in use: kept with the time they were taken, so the panel can say "since 14:32"
+    $before = json_decode((string)getSetting($db, 'failover_state'), true) ?: [];
+    $now = [];
+    foreach ($plan['failover'] as $main => $f) {
+        $now[$main] = $f + ['since' => $before[$main]['since'] ?? time()];
+        if (!isset($before[$main])) $log('failover: ' . $f['reason'] . ' -> ' . count($f['targets']) . ' targets, ' . count($f['lists']) . ' lists to ' . $f['backup']);
+    }
+    foreach ($before as $main => $f) {
+        if (!isset($now[$main])) $log('failover: ' . $main . ' works again -> its targets and lists are back');
+    }
+    setSetting($db, 'failover_state', $now ? json_encode($now) : null);
 
     return [
         'success'  => true,
@@ -975,6 +1070,8 @@ function readTarget(array $in) {
         'interface' => trim((string)($in['interface'] ?? '')),
         'gateway'   => trim((string)($in['gateway'] ?? '')),
         'enabled'   => isset($in['enabled']) ? toFlag($in['enabled']) : 1,
+        'backup_interface' => trim((string)($in['backup_interface'] ?? '')),
+        'backup_gateway'   => trim((string)($in['backup_gateway'] ?? '')),
     ];
     if (str_ends_with($t['domain'], '/0')) fail('A target cannot be a /0 network: that is a default route for the whole policy');
     if (!isValidTarget($t['domain'])) fail('Invalid domain, IP or CIDR');
@@ -982,6 +1079,8 @@ function readTarget(array $in) {
     if (!isValidInterface($t['interface'])) fail('Invalid interface name');
     if (!isValidGateway($t['gateway'])) fail('Invalid gateway IP');
     if ($t['interface'] === '' && $t['gateway'] === '') fail('Set an interface or a gateway: a route needs an exit');
+    if (!isValidInterface($t['backup_interface'])) fail('Invalid interface name');
+    if (!isValidGateway($t['backup_gateway'])) fail('Invalid gateway IP');
     return $t;
 }
 
@@ -991,6 +1090,8 @@ function bindTarget($stmt, array $t) {
     $stmt->bindValue(':iface', $t['interface'] !== '' ? $t['interface'] : null, SQLITE3_TEXT);
     $stmt->bindValue(':gw', $t['gateway'] !== '' ? $t['gateway'] : null, SQLITE3_TEXT);
     $stmt->bindValue(':enabled', $t['enabled'], SQLITE3_INTEGER);
+    $stmt->bindValue(':biface', $t['backup_interface'], SQLITE3_TEXT);
+    $stmt->bindValue(':bgw', $t['backup_gateway'], SQLITE3_TEXT);
 }
 
 function targetExists($db, $domain, $policyId, $exceptId = 0) {
@@ -1014,8 +1115,8 @@ function addDomain($in) {
         if (!$db->querySingle('SELECT id FROM policies WHERE id = ' . $t['policy_id'])) fail('Policy not found');
         if (targetExists($db, $t['domain'], $t['policy_id'])) fail('Domain already exists for this policy');
 
-        $st = $db->prepare("INSERT INTO domains (domain, policy_id, interface, gateway, enabled, created_at, updated_at)
-                            VALUES (:domain, :pid, :iface, :gw, :enabled, datetime('now'), datetime('now'))");
+        $st = $db->prepare("INSERT INTO domains (domain, policy_id, interface, gateway, enabled, backup_interface, backup_gateway, created_at, updated_at)
+                            VALUES (:domain, :pid, :iface, :gw, :enabled, :biface, :bgw, datetime('now'), datetime('now'))");
         bindTarget($st, $t);
         $st->execute() or fail('Failed to add domain', 500);
         $id = $db->lastInsertRowID();
@@ -1032,7 +1133,7 @@ function updateDomain($in) {
         if (targetExists($db, $t['domain'], $t['policy_id'], $id)) fail('Domain already exists for this policy');
 
         $st = $db->prepare("UPDATE domains SET domain = :domain, policy_id = :pid, interface = :iface, gateway = :gw,
-                            enabled = :enabled, updated_at = datetime('now') WHERE id = :id");
+                            enabled = :enabled, backup_interface = :biface, backup_gateway = :bgw, updated_at = datetime('now') WHERE id = :id");
         bindTarget($st, $t);
         $st->bindValue(':id', $id, SQLITE3_INTEGER);
         $st->execute() or fail('Failed to update domain', 500);
@@ -1071,15 +1172,23 @@ function bulkTargets($in) {
         if (!isValidGateway($set['gateway'])) fail('Invalid gateway IP');
     }
     if (isset($set['enabled'])) $set['enabled'] = toFlag($set['enabled']);
+    if (isset($set['backup_interface'])) {
+        $set['backup_interface'] = trim((string)$set['backup_interface']);
+        if (!isValidInterface($set['backup_interface'])) fail('Invalid interface name');
+    }
+    if (isset($set['backup_gateway'])) {
+        $set['backup_gateway'] = trim((string)$set['backup_gateway']);
+        if (!isValidGateway($set['backup_gateway'])) fail('Invalid gateway IP');
+    }
 
     return withDb(function ($db) use ($ids, $delete, $set, $in) {
         if (isset($set['policy_id'])) {
             $set['policy_id'] = (int)$set['policy_id'];
             if (!$db->querySingle("SELECT id FROM policies WHERE name != 'DELETED' AND id = " . $set['policy_id'])) fail('Policy not found');
         }
-        $find = $db->prepare('SELECT id, domain, policy_id, interface, gateway, enabled FROM domains WHERE id = :id');
+        $find = $db->prepare('SELECT id, domain, policy_id, interface, gateway, enabled, backup_interface, backup_gateway FROM domains WHERE id = :id');
         $remove = $db->prepare('DELETE FROM domains WHERE id = :id');
-        $update = $db->prepare("UPDATE domains SET policy_id = :pid, interface = :iface, gateway = :gw, enabled = :enabled, updated_at = datetime('now') WHERE id = :id");
+        $update = $db->prepare("UPDATE domains SET policy_id = :pid, interface = :iface, gateway = :gw, enabled = :enabled, backup_interface = :biface, backup_gateway = :bgw, updated_at = datetime('now') WHERE id = :id");
         $changed = [];
         $skipped = [];
         $db->exec('BEGIN');
@@ -1111,6 +1220,8 @@ function bulkTargets($in) {
             $update->bindValue(':iface', $interface !== '' ? $interface : null, SQLITE3_TEXT);
             $update->bindValue(':gw', $gateway !== '' ? $gateway : null, SQLITE3_TEXT);
             $update->bindValue(':enabled', $set['enabled'] ?? (int)$row['enabled'], SQLITE3_INTEGER);
+            $update->bindValue(':biface', $set['backup_interface'] ?? (string)$row['backup_interface'], SQLITE3_TEXT);
+            $update->bindValue(':bgw', $set['backup_gateway'] ?? (string)$row['backup_gateway'], SQLITE3_TEXT);
             $update->bindValue(':id', $id, SQLITE3_INTEGER);
             $update->execute();
             $changed[] = $id;
@@ -1158,7 +1269,7 @@ function doExportConfig(SQLite3 $db) {
 
     $domains = [];
     $res = $db->query("
-        SELECT d.domain, p.name as policy_name, d.interface, d.gateway, d.enabled
+        SELECT d.domain, p.name as policy_name, d.interface, d.gateway, d.enabled, d.backup_interface, d.backup_gateway
         FROM domains d
         JOIN policies p ON d.policy_id = p.id
         WHERE p.name != 'DELETED'
@@ -1171,6 +1282,8 @@ function doExportConfig(SQLite3 $db) {
             'interface' => $row['interface'] !== '' ? $row['interface'] : null,
             'gateway'   => $row['gateway'] !== '' ? $row['gateway'] : null,
             'enabled'   => (int)$row['enabled'],
+            'backup_interface' => (string)$row['backup_interface'],
+            'backup_gateway'   => (string)$row['backup_gateway'],
         ];
     }
 
@@ -1194,8 +1307,8 @@ function doImportConfig(SQLite3 $db, $data) {
     }
 
     $findStmt = $db->prepare('SELECT id FROM domains WHERE domain = :domain AND policy_id = :pid');
-    $insStmt = $db->prepare("INSERT INTO domains (domain, policy_id, interface, gateway, enabled, created_at, updated_at) VALUES (:domain, :pid, :iface, :gw, :enabled, datetime('now'), datetime('now'))");
-    $updStmt = $db->prepare("UPDATE domains SET interface = :iface, gateway = :gw, enabled = :enabled, updated_at = datetime('now') WHERE id = :id");
+    $insStmt = $db->prepare("INSERT INTO domains (domain, policy_id, interface, gateway, enabled, backup_interface, backup_gateway, created_at, updated_at) VALUES (:domain, :pid, :iface, :gw, :enabled, :biface, :bgw, datetime('now'), datetime('now'))");
+    $updStmt = $db->prepare("UPDATE domains SET interface = :iface, gateway = :gw, enabled = :enabled, backup_interface = :biface, backup_gateway = :bgw, updated_at = datetime('now') WHERE id = :id");
 
     // map: policy name in the file => policy name here ('' = skip). Without it names must match.
     $map = isset($data['map']) && is_array($data['map']) ? $data['map'] : null;
@@ -1222,6 +1335,10 @@ function doImportConfig(SQLite3 $db, $data) {
         $interface = isset($entry['interface']) ? trim((string)$entry['interface']) : '';
         $gateway = isset($entry['gateway']) ? trim((string)$entry['gateway']) : '';
         $enabled = isset($entry['enabled']) ? toFlag($entry['enabled']) : 1;
+        $backupInterface = trim((string)($entry['backup_interface'] ?? ''));
+        $backupGateway = trim((string)($entry['backup_gateway'] ?? ''));
+        if (!isValidInterface($backupInterface)) $backupInterface = '';
+        if (!isValidGateway($backupGateway)) $backupGateway = '';
 
         if (!isValidTarget($target) || !isset($policies[$policyName])
             || !isValidInterface($interface) || !isValidGateway($gateway)) {
@@ -1243,6 +1360,8 @@ function doImportConfig(SQLite3 $db, $data) {
             $updStmt->bindValue(':iface', $interface !== '' ? $interface : null, SQLITE3_TEXT);
             $updStmt->bindValue(':gw', $gateway !== '' ? $gateway : null, SQLITE3_TEXT);
             $updStmt->bindValue(':enabled', $enabled, SQLITE3_INTEGER);
+            $updStmt->bindValue(':biface', $backupInterface, SQLITE3_TEXT);
+            $updStmt->bindValue(':bgw', $backupGateway, SQLITE3_TEXT);
             $updStmt->bindValue(':id', $existing['id'], SQLITE3_INTEGER);
             $updStmt->execute();
             $updated++;
@@ -1253,6 +1372,8 @@ function doImportConfig(SQLite3 $db, $data) {
             $insStmt->bindValue(':iface', $interface !== '' ? $interface : null, SQLITE3_TEXT);
             $insStmt->bindValue(':gw', $gateway !== '' ? $gateway : null, SQLITE3_TEXT);
             $insStmt->bindValue(':enabled', $enabled, SQLITE3_INTEGER);
+            $insStmt->bindValue(':biface', $backupInterface, SQLITE3_TEXT);
+            $insStmt->bindValue(':bgw', $backupGateway, SQLITE3_TEXT);
             $insStmt->execute();
             $imported++;
         }
@@ -1363,9 +1484,10 @@ function hookDefaults() {
     $run = $php_cli . ' ' . __FILE__;
     return [
         'netfilter' => "#!/bin/sh\n[ \"\$type\" = ip6tables ] && exit 0\n[ \"\$table\" = mangle ] || exit 0\ntouch " . HOOK_RAN . "netfilter\n"
-            . "$run event >/dev/null 2>&1 &\n",
-        'ifstate' => "#!/bin/sh\n[ \"\$up\" = up ] && [ \"\$connected\" = yes ] || exit 0\ntouch " . HOOK_RAN . "ifstate\n"
-            . "$run event >/dev/null 2>&1 &\n",
+            . "$run event netfilter \"\$table\" >/dev/null 2>&1 &\n",
+        // up: always a refresh; down: the panel itself decides (only an interface that has a backup exit matters)
+        'ifstate' => "#!/bin/sh\ntouch " . HOOK_RAN . "ifstate\n"
+            . "$run event ifstate \"\${id:-\$system_name}\" \"\$system_name\" \"\$up\" \"\$connected\" >/dev/null 2>&1 &\n",
         'bird' => birdHook(),
     ];
 }
@@ -1762,10 +1884,11 @@ function coreHandlers() {
         },
 
         'getDomains'   => fn() => withDb(fn($db) => rows($db, '
-            SELECT d.id, d.domain, d.policy_id, p.name AS policy_name, p.description, d.interface, d.gateway,
+            SELECT d.id, d.domain, d.policy_id, p.name AS policy_name, p.description, d.interface, d.gateway, d.backup_interface, d.backup_gateway,
                    d.current_ip, d.previous_ip, d.ip_sources, d.dns_skip, d.last_check, d.enabled, d.created_at, d.updated_at
             FROM domains d LEFT JOIN policies p ON d.policy_id = p.id ORDER BY d.domain')),
         'getRouteDrift' => fn() => withDb('doGetRouteDrift'),
+        'getFailover'  => fn() => withDb(fn($db) => ['failover' => json_decode((string)getSetting($db, 'failover_state'), true) ?: new stdClass()]),
         'getPolicies'  => fn() => withDb(fn($db) => rows($db, "
             SELECT id, name, description, mark_hex, keenetic_table, our_table, created_at, updated_at
             FROM policies ORDER BY CASE WHEN name = 'DELETED' THEN 999 ELSE 0 END, name")),
@@ -2016,7 +2139,13 @@ function runCli(array $argv) {
             extHandlers();
             // The hook only queues a task; the dispatcher decides what is due and applies the routes
             try {
-                $started = doStartJob($db, ['kind' => 'event'], 'hook');
+                $events = isset($argv[2]) ? [[$argv[2], $argv[3] ?? '']] : [];
+                if (($argv[2] ?? '') === 'ifstate' && isset($argv[5])) {
+                    $isUp = $argv[5] === 'up' && ($argv[6] ?? '') === 'yes';
+                    if (!$isUp && !failoverWatches($db, (string)$argv[4])) exit("Not an exit with a backup: nothing to do\n");
+                    $events = [['ifstate', $argv[3], $isUp ? 'up' : 'down']];
+                }
+                $started = doStartJob($db, ['kind' => 'event', 'events' => $events], 'hook');
                 echo !empty($started['queued']) ? "Task queued\n" : (!empty($started['already']) ? "Task is already waiting\n" : "Task started\n");
             } catch (ApiError $e) {
                 echo $e->getMessage() . "\n";

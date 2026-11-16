@@ -6,8 +6,11 @@ A web panel for Keenetic routers with Entware. It routes chosen domains, IP addr
 
 ## Features
 
-- **Targets**: domains, IPs and CIDRs bound to Keenetic policies. Domains are resolved through the DNS you choose (the router's DoH proxy or your own servers); routes go into the panel's tables `400+` with `fwmark` rules of the policy.
-- **Lists**: ready sets of addresses and domains of sites (YouTube, Telegram, …) from [iplist.opencck.org](https://iplist.opencck.org), with subnet aggregation and a guard against "half of the list suddenly vanished".
+- **Targets**: domains, IPs and CIDRs bound to Keenetic policies. Domains are resolved through the DNS you choose (the router's DoH proxy or your own servers); routes go into the panel's tables `400+` with `fwmark` rules of the policy. Many targets can be edited at once (exit, policy, backup exit, on/off, delete).
+- **Lists**: ready sets of addresses and domains of sites (YouTube, Telegram, …) from [iplist.opencck.org](https://iplist.opencck.org), with subnet aggregation and a guard against "half of the list suddenly vanished". Own lists too: pasted text or a link to a file, each line recognized by itself (domain, IP, network; hosts and adblock formats are understood).
+- **Backup exit**: a target or a list gets a second interface or gateway; while the main exit fails its connectivity check or is not connected, the routes go to the backup and come back by themselves. A gateway is matched to its interface by the subnet.
+- **Connectivity checks**: the Keenetic ping-check of an interface (ICMP, TCP port, TLS, automatic) set up from the panel, "only watch" or "turn the interface off", with a window of all checks and their state.
+- **Tables and database**: the panel compares the routing tables of the router with the database and shows every difference; applying writes only what differs.
 - **Task dispatcher** without cron: ndm hooks (firewall rebuilt, interface state changed) only queue a task; the dispatcher decides what is due and applies the routes. Edits in the panel never block the interface.
 - **BGP (bird4)**: a `bird4.conf` wizard, a hook that starts bird together with the tunnel, the rule for the BGP table and a route to the neighbor through the tunnel.
 - **Clients**: devices and their connections, client registration and policy through RCI.

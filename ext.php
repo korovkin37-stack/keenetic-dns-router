@@ -1896,29 +1896,42 @@ function doSyncList(SQLite3 $db, $id, $force = false) {
     if (!$list) fail('List not found', 404);
 
     $token = listsIsWorking($list['status']) ? $list['status'] : null;
-    $sourceUrl = listsSourceUrl($db, $list['source']);
     $err = '';
     $cidrs = [];
     $addresses = [];
-    listsStage($id, 'Downloading the domains', $list['site']);
-    $domains = listsFetchLines($sourceUrl, $list['site'], 'domains', $domainsError);
-    if ($list['mode'] === 'resolve') {
-        $err = $domainsError;
-        if ($err === '' && !$domains) $err = 'The source has no domains for this site';
-    } elseif ($list['mode'] === 'both') {
-        listsStage($id, 'Downloading the networks', $list['site']);
-        $cidrs = listsFetchLines($sourceUrl, $list['site'], 'cidr4', $cidrError);
-        listsStage($id, 'Downloading the addresses', $list['site']);
-        $addresses = listsFetchLines($sourceUrl, $list['site'], 'ip4', $addressError);
-        $err = $cidrError ?: ($addressError ?: $domainsError);
-        if ($err === '' && !$cidrs && !$addresses && !$domains) $err = 'The source returned no data for this site';
+    if ($list['source'] === 'custom') {
+        // an own list: everything comes from one text; what to route follows from what is in it
+        listsStage($id, $list['custom_url'] !== '' ? 'Downloading the list' : 'Reading the list', $list['site']);
+        [$text, $err] = listsCustomText($list['custom_url'], $list['custom_text']);
+        $parsed = listsParseCustom($text);
+        $domains = $parsed['domains'];
+        $cidrs = $parsed['cidrs'];
+        $addresses = $parsed['addresses'];
+        if ($err === '' && !$domains && !$cidrs && !$addresses) $err = 'The list has no domains, IPs or networks';
+        $list['mode'] = $domains ? (($cidrs || $addresses) ? 'both' : 'resolve') : 'networks';
+        $db->exec("UPDATE lists SET mode = '" . $list['mode'] . "' WHERE id = " . (int)$id);
     } else {
-        listsStage($id, 'Downloading the networks', $list['site']);
-        $cidrs = listsFetchLines($sourceUrl, $list['site'], 'cidr4', $cidrError);
-        listsStage($id, 'Downloading the addresses', $list['site']);
-        $addresses = listsFetchLines($sourceUrl, $list['site'], 'ip4', $addressError);
-        $err = $cidrError ?: $addressError;
-        if ($err === '' && !$cidrs && !$addresses) $err = 'The source returned no data for this site';
+        $sourceUrl = listsSourceUrl($db, $list['source']);
+        listsStage($id, 'Downloading the domains', $list['site']);
+        $domains = listsFetchLines($sourceUrl, $list['site'], 'domains', $domainsError);
+        if ($list['mode'] === 'resolve') {
+            $err = $domainsError;
+            if ($err === '' && !$domains) $err = 'The source has no domains for this site';
+        } elseif ($list['mode'] === 'both') {
+            listsStage($id, 'Downloading the networks', $list['site']);
+            $cidrs = listsFetchLines($sourceUrl, $list['site'], 'cidr4', $cidrError);
+            listsStage($id, 'Downloading the addresses', $list['site']);
+            $addresses = listsFetchLines($sourceUrl, $list['site'], 'ip4', $addressError);
+            $err = $cidrError ?: ($addressError ?: $domainsError);
+            if ($err === '' && !$cidrs && !$addresses && !$domains) $err = 'The source returned no data for this site';
+        } else {
+            listsStage($id, 'Downloading the networks', $list['site']);
+            $cidrs = listsFetchLines($sourceUrl, $list['site'], 'cidr4', $cidrError);
+            listsStage($id, 'Downloading the addresses', $list['site']);
+            $addresses = listsFetchLines($sourceUrl, $list['site'], 'ip4', $addressError);
+            $err = $cidrError ?: $addressError;
+            if ($err === '' && !$cidrs && !$addresses) $err = 'The source returned no data for this site';
+        }
     }
 
     $now = gmdate('Y-m-d H:i:s');
@@ -2020,7 +2033,7 @@ function listsLastJob() {
 }
 
 function doGetLists(SQLite3 $db) {
-    $lists = rows($db, "SELECT l.id, l.site, l.grp, l.policy_id, l.enabled, l.interface, l.gateway, l.n_items, l.n_domains, l.last_sync, l.status, l.diff, l.mode, l.stats, l.source,
+    $lists = rows($db, "SELECT l.id, l.site, l.grp, l.policy_id, l.enabled, l.interface, l.gateway, l.backup_interface, l.backup_gateway, l.n_items, l.n_domains, l.last_sync, l.status, l.diff, l.mode, l.stats, l.source,
         COALESCE(p.name, '') AS policy_name, COALESCE(p.description, '') AS policy_description, COALESCE(p.mark_hex, '') AS mark_hex, COALESCE(p.our_table, 0) AS our_table
         FROM lists l LEFT JOIN policies p ON p.id = l.policy_id ORDER BY l.site");
     $routes = 0;
@@ -2031,12 +2044,16 @@ function doGetLists(SQLite3 $db) {
 }
 
 function doGetListDetail(SQLite3 $db, $id) {
-    $list = $db->querySingle('SELECT id, site, grp, policy_id, enabled, interface, gateway, excl, n_items, n_domains, last_sync, status, diff, mode, stats, dropped, resolved, domains, items, source FROM lists WHERE id = ' . (int)$id, true);
+    $list = $db->querySingle('SELECT id, site, grp, policy_id, enabled, interface, gateway, backup_interface, backup_gateway, excl, n_items, n_domains, last_sync, status, diff, mode, stats, dropped, resolved, domains, items, source, custom_url, custom_text FROM lists WHERE id = ' . (int)$id, true);
     if (!$list) fail('List not found', 404);
-    $sourceUrl = listsSourceUrl($db, $list['source']);
     $list['stage'] = listsCurrentStage();
     $list['urls'] = [];
-    foreach (['cidr4', 'ip4', 'domains'] as $data) $list['urls'][$data] = listsDataUrl($sourceUrl, $list['site'], $data);
+    if ($list['source'] === 'custom') {
+        if ($list['custom_url'] !== '') $list['urls']['list'] = $list['custom_url'];
+    } else {
+        $sourceUrl = listsSourceUrl($db, $list['source']);
+        foreach (['cidr4', 'ip4', 'domains'] as $data) $list['urls'][$data] = listsDataUrl($sourceUrl, $list['site'], $data);
+    }
     $items = $list['items'] === '' ? [] : explode("\n", $list['items']);
     $list['items_all'] = array_slice($items, 0, 5000);
     $domainNames = $list['domains'] === '' ? [] : explode("\n", $list['domains']);
@@ -2079,6 +2096,121 @@ function doGetListsCatalog(SQLite3 $db, $refresh, $sourceName = '') {
     return ['sites' => $out, 'cached' => false];
 }
 
+// ---- Own lists: a text pasted in the panel or a file by a link, one entry per line.
+// Every line is recognized by itself: a domain, an IP, a network. Understood besides plain lines:
+// comments (#, ;, !), hosts files (0.0.0.0 example.com), adblock (||example.com^), v2fly (domain:, full:), "*.example.com", links.
+const CUSTOM_LIST_MAX_LINES = 100000;
+
+function listsParseCustom($text) {
+    $domains = [];
+    $cidrs = [];
+    $addresses = [];
+    $skipped = [];
+    $skippedCount = 0;
+    $skip = function ($line, $why) use (&$skipped, &$skippedCount) {
+        $skippedCount++;
+        if (count($skipped) < 30) $skipped[] = [textCut($line, 80), $why];
+    };
+    $lines = preg_split('/\r\n|\r|\n/', preg_replace('/^\xEF\xBB\xBF/', '', (string)$text));
+    if (count($lines) > CUSTOM_LIST_MAX_LINES) $lines = array_slice($lines, 0, CUSTOM_LIST_MAX_LINES);
+    foreach ($lines as $raw) {
+        $line = trim($raw);
+        if ($line === '' || $line[0] === '#' || $line[0] === ';' || $line[0] === '!' || $line[0] === '[') continue;
+        $line = trim(preg_replace('/\s+#.*$/', '', $line));
+        // hosts file: the name after a stub address
+        if (preg_match('/^(0\.0\.0\.0|127\.0\.0\.1|::1?)\s+(\S+)/', $line, $m)) $line = $m[2];
+        if (preg_match('/^\|\|([^\^\/$]+)\^?/', $line, $m)) $line = $m[1];
+        if (preg_match('/^(domain|full):(.+)$/', $line, $m)) $line = $m[2];
+        if (preg_match('/^(keyword|regexp|geosite|include):/', $line)) {
+            $skip($raw, 'this rule type is not supported');
+            continue;
+        }
+        if (preg_match('~^https?://([^/:\s]+)~i', $line, $m)) $line = $m[1];
+        $line = strtolower(preg_replace('/^(\*\.|\.)/', '', $line));
+        if (isValidIPv4($line)) {
+            $addresses[$line] = true;
+        } elseif (isValidIPv4Cidr($line)) {
+            if (str_ends_with($line, '/32')) $addresses[substr($line, 0, -3)] = true; else $cidrs[$line] = true;
+        } elseif ($line !== 'localhost' && isValidDomain($line)) {
+            $domains[$line] = true;
+        } else {
+            $skip($raw, 'not a domain, an IP or a network');
+        }
+    }
+    return ['domains' => array_keys($domains), 'cidrs' => array_keys($cidrs), 'addresses' => array_keys($addresses), 'skipped' => $skipped, 'skipped_count' => $skippedCount];
+}
+
+// Characters, not bytes, cut to $width: the router's php has no mbstring
+function textCut($s, $width) {
+    $chars = preg_split('//u', (string)$s, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    return count($chars) > $width ? implode('', array_slice($chars, 0, $width)) . '…' : (string)$s;
+}
+
+// The text of an own list: downloaded when it is a link. Returns [text, error].
+function listsCustomText($url, $text) {
+    if ($url === '') return [(string)$text, ''];
+    $tmp = tempnam(sys_get_temp_dir(), 'krlist_');
+    $error = listsDownload($url, $tmp);
+    $body = $error === '' ? (string)file_get_contents($tmp) : '';
+    @unlink($tmp);
+    return [$body, $error];
+}
+
+function readCustomSource(array $in) {
+    $url = trim((string)($in['url'] ?? ''));
+    $text = (string)($in['text'] ?? '');
+    if ($url !== '') {
+        if (!preg_match('~^https?://([A-Za-z0-9._-]+)(:\d+)?(/\S*)?$~', $url, $m)) fail('Invalid link: it must start with http:// or https://');
+        if (preg_match('/^(localhost|127\.|0\.)/i', $m[1])) fail('A source cannot be the router itself');
+        return ['url' => $url, 'text' => ''];
+    }
+    if (trim($text) === '') fail('Paste the list or give a link to it');
+    if (strlen($text) > 4 * 1024 * 1024) fail('At most 4 MB of text');
+    return ['url' => '', 'text' => $text];
+}
+
+// What a text or a link holds, before saving: the numbers, a few examples and the lines that were skipped
+function doPreviewCustomList($in) {
+    $src = readCustomSource($in);
+    [$text, $error] = listsCustomText($src['url'], $src['text']);
+    if ($error !== '') fail($error);
+    $p = listsParseCustom($text);
+    $rejected = 0;
+    foreach (array_merge($p['cidrs'], $p['addresses']) as $entry) {
+        if (listsEntryReject($entry) !== '') $rejected++;
+    }
+    return ['success' => true, 'domains' => count($p['domains']), 'cidrs' => count($p['cidrs']), 'addresses' => count($p['addresses']), 'rejected' => $rejected,
+        'skipped' => $p['skipped'], 'skipped_count' => $p['skipped_count'],
+        'examples' => array_slice(array_merge(array_slice($p['domains'], 0, 4), array_slice($p['cidrs'], 0, 4), array_slice($p['addresses'], 0, 4)), 0, 10)];
+}
+
+// Creates an own list or changes one (its name, its contents, the policy and the exit); the update runs as a task
+function doSaveCustomList(SQLite3 $db, $in) {
+    $id = (int)($in['id'] ?? 0);
+    $name = trim(preg_replace('/[\x00-\x1f]/', ' ', (string)($in['name'] ?? '')));
+    if ($name === '' || textLength($name) > 60) fail('The name is 1 to 60 characters');
+    $src = readCustomSource($in);
+    $l = readList($db, $in);
+    if ($id && $db->querySingle("SELECT source FROM lists WHERE id = $id") !== 'custom') fail('List not found', 404);
+    $sql = $id
+        ? 'UPDATE lists SET site = :site, policy_id = :pid, interface = :if, gateway = :gw, excl = :excl, custom_url = :url, custom_text = :text WHERE id = :id'
+        : "INSERT INTO lists (site, grp, policy_id, enabled, interface, gateway, excl, mode, source, custom_url, custom_text) VALUES (:site, '', :pid, 1, :if, :gw, :excl, 'networks', 'custom', :url, :text)";
+    $stmt = $db->prepare($sql);
+    $stmt->bindValue(':site', $name, SQLITE3_TEXT);
+    $stmt->bindValue(':pid', $l['policy_id'], SQLITE3_INTEGER);
+    $stmt->bindValue(':if', $l['interface'], SQLITE3_TEXT);
+    $stmt->bindValue(':gw', $l['gateway'], SQLITE3_TEXT);
+    $stmt->bindValue(':excl', $l['excl'], SQLITE3_TEXT);
+    $stmt->bindValue(':url', $src['url'], SQLITE3_TEXT);
+    $stmt->bindValue(':text', $src['text'], SQLITE3_TEXT);
+    if ($id) $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    if (!@$stmt->execute()) fail('A list with this name is already in that policy');
+    if (!$id) $id = $db->lastInsertRowID();
+    listsQueue($db, [$id]);
+    doStartJob($db, ['kind' => 'sync', 'lists' => [$id], 'force' => 1]);
+    return ['success' => true, 'id' => $id, 'working' => true];
+}
+
 function readList(SQLite3 $db, array $in, $id = 0) {
     $policyId = (int)($in['policy_id'] ?? 0);
     if (!$db->querySingle('SELECT id FROM policies WHERE id = ' . $policyId)) fail('Valid policy is required');
@@ -2092,7 +2224,12 @@ function readList(SQLite3 $db, array $in, $id = 0) {
         if ($e !== '' && !isValidIPv4Cidr($e)) fail("Not an IPv4 address or CIDR: $e");
     }
     $mode = in_array($in['mode'] ?? '', ['resolve', 'both'], true) ? $in['mode'] : 'networks';
-    return ['policy_id' => $policyId, 'interface' => $interface, 'gateway' => $gateway, 'excl' => $excl, 'mode' => $mode, 'enabled' => isset($in['enabled']) ? (int)(bool)$in['enabled'] : 1];
+    $backupInterface = trim((string)($in['backup_interface'] ?? ''));
+    $backupGateway = trim((string)($in['backup_gateway'] ?? ''));
+    if (!isValidInterface($backupInterface)) fail('Invalid interface name');
+    if (!isValidGateway($backupGateway)) fail('Invalid gateway IP');
+    return ['policy_id' => $policyId, 'interface' => $interface, 'gateway' => $gateway, 'excl' => $excl, 'mode' => $mode, 'enabled' => isset($in['enabled']) ? (int)(bool)$in['enabled'] : 1,
+        'backup_interface' => $backupInterface, 'backup_gateway' => $backupGateway];
 }
 
 function doAddList(SQLite3 $db, $in) {
@@ -2120,7 +2257,11 @@ function doSaveList(SQLite3 $db, $in) {
     $id = (int)($in['id'] ?? 0);
     if (!$db->querySingle('SELECT id FROM lists WHERE id = ' . $id)) fail('List not found', 404);
     $l = readList($db, $in);
-    $stmt = $db->prepare('UPDATE lists SET policy_id = :pid, enabled = :en, interface = :if, gateway = :gw, excl = :excl, mode = :mode WHERE id = :id');
+    // an own list routes what its text holds: its mode is not chosen
+    if ($db->querySingle('SELECT source FROM lists WHERE id = ' . $id) === 'custom') $l['mode'] = (string)$db->querySingle('SELECT mode FROM lists WHERE id = ' . $id);
+    $stmt = $db->prepare('UPDATE lists SET policy_id = :pid, enabled = :en, interface = :if, gateway = :gw, excl = :excl, mode = :mode, backup_interface = :bif, backup_gateway = :bgw WHERE id = :id');
+    $stmt->bindValue(':bif', $l['backup_interface'], SQLITE3_TEXT);
+    $stmt->bindValue(':bgw', $l['backup_gateway'], SQLITE3_TEXT);
     $stmt->bindValue(':pid', $l['policy_id'], SQLITE3_INTEGER);
     $stmt->bindValue(':en', $l['enabled'], SQLITE3_INTEGER);
     $stmt->bindValue(':if', $l['interface'], SQLITE3_TEXT);
@@ -2199,7 +2340,7 @@ function jobArchive($job) {
         }
     }
     $lines = @file(sys_get_temp_dir() . '/dns-router-job.log', FILE_IGNORE_NEW_LINES) ?: [];
-    $keep = ['id', 'kind', 'source', 'state', 'started', 'finished', 'steps', 'step', 'total', 'done', 'failed', 'held', 'targets_changed', 'target_errors', 'routes', 'route_errors', 'route_error', 'rule_error', 'error'];
+    $keep = ['id', 'kind', 'source', 'events', 'state', 'started', 'finished', 'steps', 'step', 'total', 'done', 'failed', 'held', 'targets_changed', 'target_errors', 'routes', 'route_errors', 'route_error', 'rule_error', 'error'];
     $entry = array_intersect_key($job, array_flip($keep));
     $entry['finished'] = $job['finished'] ?? time();
     if ($entry['state'] === 'done') $entry['done'] = $entry['total'];
@@ -2315,7 +2456,7 @@ function jobPrepare(SQLite3 $db, $kind, $source, array $params = []) {
     if (!@unlink($logFile)) @file_put_contents($logFile, '');
     jobWrite('stage', null);
     jobWrite('jobpid', ['pid' => 0]);
-    jobWrite('job', ['id' => dechex(time()) . bin2hex(random_bytes(2)), 'source' => $source, 'state' => 'running', 'kind' => $kind, 'done' => 0, 'steps' => $steps, 'step' => $steps[0], 'started' => time(), 'ids' => $ids, 'sites' => $sites, 'total' => count($ids), 'targets' => $params['targets'] ?? [], 'force' => $params['force'] ?? 0, 'delay' => $params['delay'] ?? 0]);
+    jobWrite('job', ['id' => dechex(time()) . bin2hex(random_bytes(2)), 'source' => $source, 'state' => 'running', 'kind' => $kind, 'done' => 0, 'steps' => $steps, 'step' => $steps[0], 'started' => time(), 'ids' => $ids, 'sites' => $sites, 'total' => count($ids), 'targets' => $params['targets'] ?? [], 'force' => $params['force'] ?? 0, 'delay' => $params['delay'] ?? 0, 'events' => $params['events'] ?? []]);
     return $ids;
 }
 
@@ -2342,6 +2483,14 @@ function doStartJob(SQLite3 $db, $in, $source = 'panel') {
         'lists'   => array_values(array_unique(array_map('intval', (array)($in['lists'] ?? [])))),
         'force'   => !empty($in['force']) ? 1 : 0,
     ];
+    // which router events asked for the task: [hook, what] pairs, e.g. ['ifstate', 'Wireguard0']
+    $params['events'] = [];
+    foreach ((array)($in['events'] ?? []) as $event) {
+        [$hook, $what, $state] = array_pad(array_values((array)$event), 3, '');
+        if (!in_array($hook, ['netfilter', 'ifstate'], true)) continue;
+        $what = preg_match('/^[A-Za-z0-9_.\/-]{0,32}$/', (string)$what) ? (string)$what : '';
+        $params['events'][] = $hook === 'ifstate' ? [$hook, $what, $state === 'down' ? 'down' : 'up'] : [$hook, $what];
+    }
     jobReadChecked();
     $lock = jobLock();
     $job = jobRead('job');
@@ -2360,8 +2509,15 @@ function doStartJob(SQLite3 $db, $in, $source = 'panel') {
             }
         }
         $covered = $job['kind'] === $kind && !in_array($kind, ['event', 'sync'], true);
-        foreach ($queue as $item) {
-            if ($item['kind'] === $kind) $covered = true;
+        foreach ($queue as $n => $item) {
+            if ($item['kind'] !== $kind) continue;
+            $covered = true;
+            // the waiting event task remembers every event that asked for it
+            if ($kind === 'event' && $params['events']) {
+                $merged = array_merge($item['events'] ?? [], $params['events']);
+                $queue[$n]['events'] = array_slice(array_values(array_unique($merged, SORT_REGULAR)), -8);
+                jobWrite('jobq', $queue);
+            }
         }
         if ($covered) {
             fclose($lock);
@@ -2491,6 +2647,10 @@ function jobRun(SQLite3 $db, $kind, array $ids) {
         jobFinished();
     });
     $steps = jobRead('job')['steps'];
+    foreach (jobRead('job')['events'] ?? [] as $event) {
+        [$hook, $what, $state] = array_pad($event, 3, 'up');
+        jobLog('event: ' . ($hook === 'ifstate' ? 'interface ' . $what . ($state === 'down' ? ' went down' : ' came up') : 'firewall rebuilt' . ($what !== '' ? ' (' . $what . ')' : '')));
+    }
     jobLog('started: ' . implode(', ', $steps));
     $delay = jobRead('job')['delay'];
     if ($delay > 0) {
@@ -2631,6 +2791,108 @@ function doSetInterfaceState($in) {
     $now = rciInterfaceFind($id);
     $r['state'] = (string)($now['state'] ?? '');
     return $r;
+}
+
+// ---- ping-check of Keenetic on an interface. The panel keeps its own profile "dnsr-<interface>"
+// and never edits a profile somebody else made (the web interface names its own "_WEBADMIN_...").
+function pingCheckProfileName($id) {
+    return 'dnsr-' . $id;
+}
+
+function pingCheckOf($id) {
+    foreach ((array)(rciGet('/rci/show/ping-check')['pingcheck'] ?? []) as $profile) {
+        $on = $profile['interface'][$id] ?? null;
+        if (!is_array($on)) continue;
+        return [
+            'profile'      => (string)$profile['profile'],
+            'ours'         => $profile['profile'] === pingCheckProfileName($id),
+            'hosts'        => array_values((array)($profile['host'] ?? [])),
+            'mode'         => (string)($profile['mode'] ?? ''),
+            'port'         => (int)($profile['port'] ?? 0),
+            'interval'     => (int)($profile['update-interval'] ?? 0),
+            'max_fails'    => (int)($profile['max-fails'] ?? 0),
+            'ignore_fail'  => !empty($on['ignore-fail']),
+            'status'       => (string)($on['status'] ?? ''),
+            'successcount' => (int)($on['successcount'] ?? 0),
+            'failcount'    => (int)($on['failcount'] ?? 0),
+        ];
+    }
+    return null;
+}
+
+// Every profile with the interfaces it is on: the list window of the Interfaces tab
+function doGetPingChecks() {
+    $out = [];
+    foreach ((array)(rciGet('/rci/show/ping-check')['pingcheck'] ?? []) as $profile) {
+        $interfaces = [];
+        foreach ((array)($profile['interface'] ?? []) as $id => $on) {
+            $interfaces[] = ['id' => (string)$id, 'status' => (string)($on['status'] ?? ''), 'successcount' => (int)($on['successcount'] ?? 0),
+                'failcount' => (int)($on['failcount'] ?? 0), 'ignore_fail' => !empty($on['ignore-fail'])];
+        }
+        if (!$interfaces && empty($profile['host'])) continue;
+        $out[] = ['profile' => (string)$profile['profile'], 'ours' => str_starts_with((string)$profile['profile'], 'dnsr-'),
+            'hosts' => array_values((array)($profile['host'] ?? [])), 'mode' => (string)($profile['mode'] ?? ''), 'port' => (int)($profile['port'] ?? 0),
+            'interval' => (int)($profile['update-interval'] ?? 0), 'max_fails' => (int)($profile['max-fails'] ?? 0), 'interfaces' => $interfaces];
+    }
+    return ['profiles' => $out];
+}
+
+function doGetPingCheck($in) {
+    $id = rciInterfaceId($in['id'] ?? '');
+    if ($id === null) fail('Invalid interface name');
+    return ['check' => pingCheckOf($id), 'profile' => pingCheckProfileName($id)];
+}
+
+// Creates or changes the panel's profile and puts it on the interface.
+// watch = ignore-fail: Keenetic only counts failures and keeps the interface on; otherwise it turns the interface off.
+function doSetPingCheck($in) {
+    $id = rciInterfaceId($in['id'] ?? '');
+    if ($id === null) fail('Invalid interface name');
+    if (rciInterfaceFind($id) === null) fail('Interface not found', 404);
+    $hosts = array_values(array_unique(array_filter(preg_split('/[\s,;]+/', trim((string)($in['hosts'] ?? ''))))));
+    if (!$hosts) fail('Enter at least one host to ping');
+    if (count($hosts) > 4) fail('At most 4 hosts');
+    foreach ($hosts as $host) {
+        if (!isValidIPv4($host) && !isValidDomain($host)) fail("Not an IPv4 address or a domain: $host");
+    }
+    $interval = (int)($in['interval'] ?? 10);
+    $maxFails = (int)($in['max_fails'] ?? 3);
+    if ($interval < 5 || $interval > 300) fail('The interval is 5 to 300 seconds');
+    if ($maxFails < 1 || $maxFails > 20) fail('Failures in a row: 1 to 20');
+    // the modes of the Keenetic web interface: ICMP, a TCP port, a TLS handshake on a TCP port, automatic
+    $mode = (string)($in['mode'] ?? 'icmp');
+    if (!in_array($mode, ['icmp', 'connect', 'tls', 'auto'], true)) fail('Unknown check mode');
+    $port = (int)($in['port'] ?? 443);
+    if (in_array($mode, ['connect', 'tls'], true) && ($port < 1 || $port > 65535)) fail('The port is 1 to 65535');
+
+    $now = pingCheckOf($id);
+    if ($now && !$now['ours']) fail('The interface already has the profile "' . $now['profile'] . '" set in Keenetic: remove it there first');
+    $p = pingCheckProfileName($id);
+    // the same text as in the router console; "no host" clears every host of the profile
+    $cli = ["ping-check profile $p"];
+    if ($now && $now['hosts']) $cli[] = "ping-check profile $p no host " . $now['hosts'][0];
+    foreach ($hosts as $host) $cli[] = "ping-check profile $p host $host";
+    $cli[] = "ping-check profile $p mode $mode";
+    if (in_array($mode, ['connect', 'tls'], true)) $cli[] = "ping-check profile $p port $port";
+    $cli[] = "ping-check profile $p update-interval $interval";
+    $cli[] = "ping-check profile $p max-fails $maxFails";
+    $cli[] = "interface $id ping-check profile $p";
+    $cli[] = !empty($in['watch']) ? "interface $id ping-check ignore-fail" : "interface $id no ping-check ignore-fail";
+    return rciApply(array_map(fn($line) => ['parse' => $line], $cli), $in);
+}
+
+function doRemovePingCheck($in) {
+    $id = rciInterfaceId($in['id'] ?? '');
+    if ($id === null) fail('Invalid interface name');
+    $now = pingCheckOf($id);
+    if (!$now) return ['success' => true];
+    if (!$now['ours']) fail('This profile was set in Keenetic: remove it there');
+    $p = pingCheckProfileName($id);
+    $cli = [];
+    if ($now['ignore_fail']) $cli[] = "interface $id no ping-check ignore-fail";
+    $cli[] = "interface $id no ping-check profile";
+    $cli[] = "no ping-check profile $p";
+    return rciApply(array_map(fn($line) => ['parse' => $line], $cli), $in);
 }
 
 // Characters, not bytes; the router's php has no mbstring
@@ -4282,6 +4544,10 @@ return [
     'getInterfaces'       => 'doGetInterfaces',
     'setInterfaceState'   => 'doSetInterfaceState',
     'setInterfaceDescription' => 'doSetInterfaceDescription',
+    'getPingCheck'        => 'doGetPingCheck',
+    'getPingChecks'       => fn() => doGetPingChecks(),
+    'setPingCheck'        => 'doSetPingCheck',
+    'removePingCheck'     => 'doRemovePingCheck',
     'getStaticRoutes'     => 'doGetStaticRoutes',
     'addStaticRoutes'     => 'doAddStaticRoutes',
     'deleteStaticRoutes'  => 'doDeleteStaticRoutes',
@@ -4318,6 +4584,8 @@ return [
     'getListDetail'       => fn($in) => withDb(fn($db) => doGetListDetail($db, $in['id'] ?? 0)),
     'getListsCatalog'     => fn($in) => withDb(fn($db) => doGetListsCatalog($db, !empty($in['refresh']), (string)($in['source'] ?? ''))),
     'addList'             => fn($in) => withDb(fn($db) => doAddList($db, $in)),
+    'previewCustomList'   => fn($in) => doPreviewCustomList($in),
+    'saveCustomList'      => fn($in) => withDb(fn($db) => doSaveCustomList($db, $in)),
     'saveList'            => fn($in) => withDb(fn($db) => doSaveList($db, $in)),
     'deleteList'          => fn($in) => withDb(fn($db) => doDeleteList($db, $in)),
     'cancelLists'         => fn($in) => withDb(fn($db) => doCancelLists($db, $in)),

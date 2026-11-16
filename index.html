@@ -77,7 +77,7 @@
                 <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h10a4 4 0 0 1 0 8H8"></path><path d="M7 5L4 8l3 3"></path></svg></span>
                 <div class="brand-text">
                     <h1>Keenetic DNS Router</h1>
-                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.42.1</button>
+                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.45.1</button>
                 </div>
             </div>
             <nav class="tabs" id="mainNav" aria-label="Sections">
@@ -127,6 +127,7 @@
 
         <div id="domainsTab" class="tab-content active">
             <div class="status-strip" id="statusStrip"></div>
+            <div class="failover-banner" id="failoverBanner" hidden></div>
             <div class="toolbar">
                 <input type="text" id="searchDomains" placeholder="Search domains, IPs, CIDR...">
                 <div class="toolbar-left">
@@ -208,6 +209,7 @@
                     <div class="toolbar-actions">
                         <button class="btn" id="syncListsBtn" title="Download fresh data from the source for all lists, then apply the routes">↻ Update all</button>
                         <button class="btn" id="sourcesBtn" title="Where the lists are downloaded from">Sources</button>
+                        <button class="btn" id="addCustomListBtn" title="Your own list: paste domains, IPs and networks or give a link to a file">+ Own list</button>
                         <button class="btn btn-primary" id="addListBtn">+ Add lists</button>
                     </div>
                 </div>
@@ -344,6 +346,7 @@
                     <button type="button" data-f="active">Active <span class="seg-n" id="ifActive"></span></button>
                     <button type="button" data-f="all">All <span class="seg-n" id="ifAll"></span></button>
                 </div>
+                <button class="btn btn-small" id="pingChecksBtn" title="Every connectivity check of Keenetic and its state">Connectivity checks</button>
                 <button class="btn btn-small" id="refreshInterfacesBtn">↻ Refresh</button>
             </div>
             <div class="tab-sub" id="interfacesSummary"></div>
@@ -615,9 +618,23 @@ Custom: one per line, for this run only.">i</span></span>
                             </div>
                             <div class="form-group">
                                 <label for="domainGateway">or gateway:</label>
-                                <input type="text" id="domainGateway" placeholder="192.168.1.1">
+                                <input type="text" id="domainGateway" list="gatewaySuggestions" placeholder="192.168.1.1">
                             </div>
                         </div>
+                        <details class="backup-exit" id="domainBackupBox">
+                            <summary>Backup exit <span class="muted" id="domainBackupSummary"></span></summary>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="domainBackupInterface">Interface:</label>
+                                    <select id="domainBackupInterface" data-empty="No backup"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="domainBackupGateway">or gateway:</label>
+                                    <input type="text" id="domainBackupGateway" list="gatewaySuggestions" placeholder="10.9.0.1" autocomplete="off" spellcheck="false">
+                                </div>
+                            </div>
+                            <p class="card-note" id="domainBackupNote">Taken while the main exit fails its connectivity check or is not connected, and given back when it works again.</p>
+                        </details>
                         <label class="check-row"><input type="checkbox" id="domainEnabled" checked> <span>Enabled</span></label>
                     </form>
                 </div>
@@ -868,7 +885,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
                         </div>
                         <div class="form-group">
                             <label for="catalogGateway">or gateway:</label>
-                            <input type="text" id="catalogGateway" placeholder="192.168.1.1" autocomplete="off" spellcheck="false">
+                            <input type="text" id="catalogGateway" list="gatewaySuggestions" placeholder="192.168.1.1" autocomplete="off" spellcheck="false">
                         </div>
                     </div>
                                         <div class="form-group">
@@ -917,10 +934,31 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
                         </div>
                         <div class="form-group">
                             <label for="listGateway">or gateway:</label>
-                            <input type="text" id="listGateway" placeholder="192.168.1.1" autocomplete="off" spellcheck="false">
+                            <input type="text" id="listGateway" list="gatewaySuggestions" placeholder="192.168.1.1" autocomplete="off" spellcheck="false">
                         </div>
                     </div>
-                    <div class="form-group">
+                    <details class="backup-exit" id="listBackupBox">
+                            <summary>Backup exit <span class="muted" id="listBackupSummary"></span></summary>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="listBackupInterface">Interface:</label>
+                                    <select id="listBackupInterface" data-empty="No backup"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="listBackupGateway">or gateway:</label>
+                                    <input type="text" id="listBackupGateway" list="gatewaySuggestions" placeholder="10.9.0.1" autocomplete="off" spellcheck="false">
+                                </div>
+                            </div>
+                            <p class="card-note" id="listBackupNote">Taken while the main exit fails its connectivity check or is not connected, and given back when it works again.</p>
+                        </details>
+                    <div class="form-group" id="listCustomBox" hidden>
+                        <label>Contents:</label>
+                        <div class="if-control-row">
+                            <span class="muted" id="listCustomWhat"></span>
+                            <button type="button" class="btn btn-small" id="listEditContents">Edit the contents and the name</button>
+                        </div>
+                    </div>
+                    <div class="form-group" id="listModeBox">
                         <label for="listMode">What to route:</label>
                         <select id="listMode">
                             <option value="networks">Networks and addresses from the source</option>
@@ -928,7 +966,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
                         <option value="both">Networks from the source and resolved domains (slowest)</option>
                         </select>
                     </div>
-                    <div class="form-group">
+                    <div class="form-group" id="listUrlsBox">
                         <label>Downloaded from:</label>
                         <div class="list-urls" id="listUrls"></div>
                     </div>
@@ -959,6 +997,17 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
             <input type="text" id="tableViewFilter" placeholder="Filter (searches on the router, not just what's loaded)...">
             <div id="tableViewList" class="table-view-list"></div>
             <div id="tableViewStatus" class="table-view-status"></div>
+        </div>
+    </div>
+
+    <div id="pingChecksModal" class="modal">
+        <div class="modal-content drift-content">
+            <button type="button" class="close" id="pingChecksClose" aria-label="Close">&times;</button>
+            <h2>Connectivity checks</h2>
+            <div id="pingChecksList" class="pc-list"></div>
+            <div class="form-actions">
+                <button type="button" class="btn" id="pingChecksRefresh">↻ Refresh</button>
+            </div>
         </div>
     </div>
 
@@ -998,7 +1047,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
                             </div>
                             <div class="form-group">
                                 <label for="bwGateway">Next hop</label>
-                                <input type="text" id="bwGateway" data-bw="gateway" placeholder="10.8.1.0" spellcheck="false">
+                                <input type="text" id="bwGateway" list="gatewaySuggestions" data-bw="gateway" placeholder="10.8.1.0" spellcheck="false">
                                 <div class="hint">Tunnel side address; all BGP routes go via it.</div>
                             </div>
                             <div class="form-group">
@@ -1146,6 +1195,59 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
         <button type="button" class="icon-btn" data-bulk="clear" title="Clear the selection (Esc)" aria-label="Clear the selection">✕</button>
     </div>
 
+    <div id="customListModal" class="modal">
+        <div class="modal-content target-content">
+            <div class="modal-head">
+                <h2 id="customListTitle">Own list</h2>
+                <button type="button" class="close" id="customListClose" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="customListName">Name:</label>
+                    <input type="text" id="customListName" maxlength="60" placeholder="My game services" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <div class="seg" id="customListSource">
+                        <button type="button" data-v="text" class="active">Paste the text</button>
+                        <button type="button" data-v="url">Link to a file</button>
+                    </div>
+                </div>
+                <div class="form-group" id="customListTextBox">
+                    <textarea id="customListText" rows="9" spellcheck="false" placeholder="example.com&#10;*.cdn.example.com&#10;203.0.113.0/24&#10;198.51.100.7&#10;# comments, hosts files and adblock lines are understood too"></textarea>
+                </div>
+                <div class="form-group" id="customListUrlBox" hidden>
+                    <input type="text" id="customListUrl" placeholder="https://example.com/list.txt" autocomplete="off" spellcheck="false">
+                    <p class="card-note">Downloaded again on every update of the lists, through the interface set for downloads.</p>
+                </div>
+                <div class="if-control-row">
+                    <span class="muted card-note">One entry per line: a domain, an IP or a network, recognized by itself.</span>
+                    <button type="button" class="btn btn-small" id="customListPreview">Check</button>
+                </div>
+                <div id="customListResult" class="res-box" hidden></div>
+                <div class="form-group">
+                    <label for="customListPolicy">Policy:</label>
+                    <select id="customListPolicy"></select>
+                </div>
+                <div class="form-row catalog-exit">
+                    <div class="form-group">
+                        <label for="customListInterface">Interface:</label>
+                        <select id="customListInterface"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="customListGateway">or gateway:</label>
+                        <input type="text" id="customListGateway" list="gatewaySuggestions" placeholder="192.168.1.1" autocomplete="off" spellcheck="false">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-foot">
+                <span class="foot-msg" id="customListMsg"></span>
+                <button type="button" class="btn btn-primary" id="customListSave">Save and update</button>
+            </div>
+        </div>
+    </div>
+
+    <datalist id="gatewaySuggestions"></datalist>
+
     <div id="bulkModal" class="modal">
         <div class="modal-content target-content">
             <div class="modal-head">
@@ -1154,6 +1256,18 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
             </div>
             <div class="modal-body">
                 <p class="card-note" id="bulkNote"></p>
+                <div class="form-group">
+                    <label for="bulkBackupMode">Backup exit:</label>
+                    <select id="bulkBackupMode">
+                        <option value="keep">Keep as is</option>
+                        <option value="set">Set</option>
+                        <option value="clear">Remove the backup</option>
+                    </select>
+                    <div class="form-row" id="bulkBackupBox" hidden>
+                        <div class="form-group"><select id="bulkBackupInterface" data-empty="No interface"></select></div>
+                        <div class="form-group"><input type="text" id="bulkBackupGateway" list="gatewaySuggestions" placeholder="or gateway 10.9.0.1" autocomplete="off" spellcheck="false"></div>
+                    </div>
+                </div>
                 <div class="form-group">
                     <label for="bulkPolicy">Policy:</label>
                     <select id="bulkPolicy"></select>
@@ -1176,7 +1290,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
                                 <option value="set">Set</option>
                                 <option value="clear">Leave empty</option>
                             </select>
-                            <input type="text" id="bulkGateway" placeholder="192.168.1.1" autocomplete="off" spellcheck="false" hidden>
+                            <input type="text" id="bulkGateway" list="gatewaySuggestions" placeholder="192.168.1.1" autocomplete="off" spellcheck="false" hidden>
                         </div>
                     </div>
                 </div>
@@ -1206,7 +1320,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
                     </div>
                     <div class="form-group">
                         <label for="staticRouteGateway">or gateway:</label>
-                        <input type="text" id="staticRouteGateway" placeholder="192.168.1.1" autocomplete="off" spellcheck="false">
+                        <input type="text" id="staticRouteGateway" list="gatewaySuggestions" placeholder="192.168.1.1" autocomplete="off" spellcheck="false">
                     </div>
                 </div>
                 <div class="form-group">
@@ -1251,6 +1365,52 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
                 <div class="if-control-row">
                     <input type="text" id="ifDescInput" maxlength="64" placeholder="Description" autocomplete="off">
                     <button class="btn btn-small" id="ifDescSave">Save description</button>
+                </div>
+            </div>
+            <div id="pingCheckBox" class="if-control" hidden>
+                <div class="if-control-row">
+                    <strong>Connectivity check <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Keenetic pings the hosts through this interface. After the set number of failures in a row the check says fail.
+Only watch: the interface stays on, the panel sees the result (for the backup exit).
+Turn off: Keenetic turns the interface off itself, as for a provider connection.">i</span></strong>
+                    <span id="pcStatus" class="pc-status"></span>
+                </div>
+                <p class="card-note" id="pcForeign" hidden></p>
+                <div id="pcForm" class="pc-form">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="pcHosts">Hosts to check:</label>
+                            <input type="text" id="pcHosts" placeholder="1.1.1.1 8.8.8.8" autocomplete="off" spellcheck="false">
+                        </div>
+                        <div class="form-group">
+                            <label for="pcMode2">Check:</label>
+                            <select id="pcMode2">
+                                <option value="icmp">ICMP (ping)</option>
+                                <option value="connect">TCP port</option>
+                                <option value="tls">TLS on a TCP port</option>
+                                <option value="auto">Automatic</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="pcPortBox" hidden>
+                            <label for="pcPort">Port:</label>
+                            <input type="number" id="pcPort" min="1" max="65535" value="443">
+                        </div>
+                        <div class="form-group">
+                            <label for="pcInterval">Every:</label>
+                            <select id="pcInterval"><option value="10">10 s</option><option value="30">30 s</option><option value="60">60 s</option></select>
+                        </div>
+                        <div class="form-group">
+                            <label for="pcFails">Failures in a row:</label>
+                            <select id="pcFails"><option value="3">3</option><option value="5">5</option><option value="10">10</option></select>
+                        </div>
+                    </div>
+                    <div class="seg" id="pcMode">
+                        <button type="button" data-v="watch" class="active">Only watch</button>
+                        <button type="button" data-v="off">Turn the interface off</button>
+                    </div>
+                    <div class="if-control-row">
+                        <button type="button" class="btn btn-small" id="pcRemove">Remove the check</button>
+                        <button type="button" class="btn btn-small btn-primary" id="pcSave">Save</button>
+                    </div>
                 </div>
             </div>
             <div id="interfaceDetailFacts" class="table-view-list"></div>

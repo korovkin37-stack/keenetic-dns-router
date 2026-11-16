@@ -2,6 +2,21 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.45.1
+- Connectivity check in the interface window: the Keenetic ping-check of the interface (hosts, interval, failures in a row) with its live state. Two modes: "Only watch" (ignore-fail: the interface stays on, the panel reads the result; groundwork for the backup exit) and "Turn the interface off" (Keenetic turns it off itself). The panel keeps its own profile `dnsr-<interface>` and only shows profiles made in the Keenetic web interface.
+- The connectivity check has all the modes of Keenetic: ICMP, TCP port, TLS on a TCP port, automatic (with the port for the TCP ones).
+- "Connectivity checks" on the Interfaces tab: every profile with its interfaces and their state in one window.
+- The "Connectivity checks" window shows a card per interface: state, method and hosts, failures in a row against the threshold, the share of passed checks, the mode and who made the profile; it refreshes every 10 s while open. Tunnels without a check are listed with a button to set one up.
+- Own lists: "+ Own list" on the Lists tab takes a pasted text or a link to a file. Every line is recognized by itself: a domain, an IP or a network; comments, hosts files, adblock lines (`||example.com^`), v2fly (`domain:`, `full:`), `*.example.com` and links are understood. "Check" shows what was found and which lines were skipped and why. An own list then works like any other: one row, subnets merged, the guard against a list that lost half of its entries, domains resolved through your DNS on every update; a link is downloaded again each time.
+- Every gateway field (targets, editing several targets, lists, own lists, the catalog, static routes, the bird wizard) offers the gateways already used by targets and lists, the most used first.
+- A task started by the router says which events asked for it: "Router event: Wireguard0 came up, firewall rebuilt (mangle)" in the task list, and an "event: …" line at the top of its log. Events that come while the task waits in the queue are added to it. The ndm hooks now pass the interface and the table to the panel; they are rewritten by the update itself (a hook with your own text keeps it).
+- Backup exit for targets and lists (an interface or a gateway). At every apply the panel checks the main exit: when Keenetic says it is not connected or its connectivity check fails, the routes go to the backup; when it works again, they come back. Only the changed routes are written. A gateway is matched to its interface by the subnet, so targets set by a gateway work too. A backup that is down as well is not used.
+- The targets table shows a struck main exit → the backup while it is used, and a banner on top; the connectivity check cards say since when the backup is on and what moved where. The task log has "failover:" lines.
+- Editing several targets can set or remove the backup exit; export and import keep it.
+- The ndm interface hook also reports an interface going down; the panel starts a task only when that interface is the main exit of something with a backup.
+- A policy is shown with its description everywhere: target details, every policy list (targets, lists, catalog, editing several targets, test route, clients, BGP, import), the clients table and connections, the table check, the DPI check. The description is no longer translated ("Custom VPN" stayed "Custom VPN" only in some places).
+- The backup exit messages name the interfaces with their descriptions: "Wireguard2 (amnezia, nwg2) is not connected … on the backup exit GigabitEthernet1 (ISP, eth3)".
+
 ## 5.42.1
 - Editing several targets is one window: policy, interface and gateway together, each can be kept as is.
 

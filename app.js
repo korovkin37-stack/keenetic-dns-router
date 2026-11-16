@@ -1,7 +1,7 @@
 // app.js - клиентская логика
 
 const API = '/app.php';
-const JS_VERSION = '5.42.1'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.45.1'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -852,10 +852,12 @@ async function loadData() {
         state.deleted = state.domains.filter(domain => {
             return domain.policy_name === 'DELETED'
         });        
+        await loadFailover();
         renderDomains();
         renderPolicies();
         renderStatusStrip();
         updateNavCounts();
+        refreshGatewaySuggestions();
     } catch (error) {
         console.log('Failed to load data: ' + error.message);
         showToast('Failed to load data: ' + error.message, 'error', 9000);
@@ -983,8 +985,8 @@ function renderDomains(filterText = '') {
                 const rowHtml = `<tr class="domain-row${picked ? ' is-picked' : ''}">
                     <td class="cell-check"><input type="checkbox" class="target-check" data-id="${domain.id}" aria-label="${escapeHtml(t('Select'))}"${picked ? ' checked' : ''}></td>
                     <td class="cell-domain" data-label="Target" data-col="target"><button type="button" class="target-link" data-click="openTarget" data-id="${domain.id}" title="Target details" data-notr>${escapeHtml(domain.domain)}</button></td>
-                    <td class="cell-mono" data-label="Interface" data-col="interface">${escapeHtml(domain.interface) || '<span class="muted">—</span>'}</td>
-                    <td class="cell-mono" data-label="Gateway" data-col="gateway">${escapeHtml(domain.gateway) || '<span class="muted">—</span>'}</td>
+                    <td class="cell-mono" data-label="Interface" data-col="interface">${exitCell(domain.interface, domain.backup_interface, failoverOf('targets', domain.id))}</td>
+                    <td class="cell-mono" data-label="Gateway" data-col="gateway">${exitCell(domain.gateway, domain.backup_gateway, failoverOf('targets', domain.id))}</td>
                     <td data-label="Current IP" data-col="current-ip">${ipChips(domain.current_ip)}</td>
                     <td class="cell-mono" data-label="Last check" data-col="last-check">${lastCheckDate ? `<span title="${escapeHtml(i18nDate(lastCheckDate))}">${timeAgo(domain.last_check)}</span>` : '<span class="muted">—</span>'}</td>
                     <td data-label="Status" data-col="status"><span class="status-pill"><span class="led ${status.cls}" title="${status.label}"></span><span class="status-label">${status.label}</span></span></td>
@@ -1114,13 +1116,18 @@ function openBulk() {
     document.getElementById('bulkGateway').hidden = true;
     document.getElementById('bulkGateway').value = '';
     fillInterfaceSelect('bulkInterface', '');
+    fillInterfaceSelect('bulkBackupInterface', '');
+    document.getElementById('bulkBackupMode').value = 'keep';
+    document.getElementById('bulkBackupBox').hidden = true;
+    document.getElementById('bulkBackupGateway').value = '';
     document.getElementById('bulkPolicy').innerHTML = `<option value="">${escapeHtml(t('Keep as is'))}</option>` + state.policies
         .filter(p => p.name !== 'DELETED')
-        .map(p => `<option value="${p.id}">${escapeHtml(p.name + (p.description ? ' — ' + p.description : ''))}</option>`).join('');
+        .map(p => policyOption(p.id, p, false)).join('');
     document.getElementById('bulkMsg').textContent = '';
     document.getElementById('bulkModal').style.display = 'block';
 }
 
+document.getElementById('bulkBackupMode').addEventListener('change', (e) => { document.getElementById('bulkBackupBox').hidden = e.target.value !== 'set'; });
 document.getElementById('bulkIfaceMode').addEventListener('change', (e) => { document.getElementById('bulkInterface').hidden = e.target.value !== 'set'; });
 document.getElementById('bulkGwMode').addEventListener('change', (e) => { document.getElementById('bulkGateway').hidden = e.target.value !== 'set'; });
 document.getElementById('bulkClose').addEventListener('click', () => { document.getElementById('bulkModal').style.display = 'none'; });
@@ -1136,6 +1143,16 @@ document.getElementById('bulkSave').addEventListener('click', async () => {
     if (ifaceMode === 'clear') set.interface = '';
     if (gwMode === 'set') set.gateway = document.getElementById('bulkGateway').value.trim();
     if (gwMode === 'clear') set.gateway = '';
+    const backupMode = document.getElementById('bulkBackupMode').value;
+    if (backupMode === 'set') {
+        set.backup_interface = document.getElementById('bulkBackupInterface').value;
+        set.backup_gateway = document.getElementById('bulkBackupGateway').value.trim();
+        if (!set.backup_interface && !set.backup_gateway) { msg.textContent = t('Choose the backup interface or enter its gateway'); return; }
+    }
+    if (backupMode === 'clear') {
+        set.backup_interface = '';
+        set.backup_gateway = '';
+    }
     if (ifaceMode === 'set' && !set.interface) { msg.textContent = t('Choose an interface'); return; }
     if (gwMode === 'set' && !set.gateway) { msg.textContent = t('Enter the gateway'); return; }
     if (!Object.keys(set).length) { msg.textContent = t('Nothing to change'); return; }
@@ -1428,7 +1445,7 @@ function openTestRouteModal(prefill = null) {
     select.innerHTML = '<option value="">No policy (plain routing, no mark)</option>' +
         state.policies
             .filter(p => p.name !== 'DELETED')
-            .map(p => `<option value="${escapeHtml(p.mark_hex)}">${escapeHtml(p.description || p.name)} (${escapeHtml(p.name)})</option>`)
+            .map(p => policyOption(p.mark_hex, p, false))
             .join('');
 
     document.getElementById('testRouteIp').value = prefill && prefill.domain ? prefill.domain : '';
@@ -1669,16 +1686,7 @@ function openDomainModal(id = null, prefill = null) {
     
     // Заполняем селект политик
     const policySelect = document.getElementById('domainPolicy');
-    policySelect.innerHTML = state.policies.filter(policie => {
-        return policie.name !== 'DELETED'
-    }).map(policie => {
-        if (policie.description == "") {
-            return '<option value="'+policie.id+'">'+escapeHtml(policie.name)+'</option>'
-        } else {
-            return '<option value="'+policie.id+'">'+escapeHtml(policie.description)+' ('+escapeHtml(policie.name)+')</option>'
-        }
-        
-    }).join('');    
+    policySelect.innerHTML = policyOptions();
     if (id) {
         let domain = state.domains.filter(domain=>{
             return domain.id == id
@@ -1690,11 +1698,13 @@ function openDomainModal(id = null, prefill = null) {
         fillInterfaceSelect('domainInterface', domain.interface || '');
         document.getElementById('domainGateway').value = domain.gateway || '';
         document.getElementById('domainEnabled').checked = domain.enabled == 1;
+        fillBackupExit('domain', domain.backup_interface, domain.backup_gateway);
         document.getElementById('domainNameHint').style.display = 'none'; // редактируем одну существующую запись - подсказка про "по строке на цель" тут не к месту
     } else {
         targetDetailId = null;
         form.reset();
         fillInterfaceSelect('domainInterface', '');
+        fillBackupExit('domain', '', '');
         document.getElementById('domainId').value = '';
         document.getElementById('domainEnabled').checked = true;
         document.getElementById('domainNameHint').style.display = 'block';
@@ -1754,7 +1764,9 @@ async function saveDomain(event) {
         policy_id: parseInt(document.getElementById('domainPolicy').value),
         interface: document.getElementById('domainInterface').value || null,
         gateway: document.getElementById('domainGateway').value || null,
-        enabled: document.getElementById('domainEnabled').checked ? 1 : 0
+        enabled: document.getElementById('domainEnabled').checked ? 1 : 0,
+        backup_interface: document.getElementById('domainBackupInterface').value,
+        backup_gateway: document.getElementById('domainBackupGateway').value.trim(),
     };
 
     try {
@@ -1896,7 +1908,7 @@ function showImportDialog(parsed) {
             const same = local.some(p => p.name === name);
             const def = same ? name : (local.length === 1 ? local[0].name : '');
             const opts = ['<option value="">' + escapeHtml(t('Do not import')) + '</option>']
-                .concat(local.map(p => `<option value="${escapeHtml(p.name)}"${p.name === def ? ' selected' : ''}>${escapeHtml(p.name)}</option>`)).join('');
+                .concat(local.map(p => policyOption(p.name, p, p.name === def))).join('');
             return `<div class="imp-row"><div class="imp-src"><b data-notr>${escapeHtml(name || '(no policy)')}</b> <span class="muted">${escapeHtml(t('{0} target(s)', n))}</span></div>`
                 + `<span class="imp-arrow">→</span><select class="imp-sel" data-src="${i}">${opts}</select></div>`;
         }).join('');
@@ -2035,6 +2047,15 @@ let jobStarting = false;
 let jobBusyText = '';
 let jobQueue = [];
 const JOB_SOURCES = { panel: 'Panel', hook: 'Router event' };
+// Who started a task and, for a router event, which events: "Router event: Wireguard0 came up, firewall rebuilt"
+function jobSourceText(job) {
+    const source = t(JOB_SOURCES[job.source] || job.source || 'Panel');
+    const events = (job.events || []).map(([hook, what, state]) => {
+        if (hook === 'ifstate') return t(state === 'down' ? '{0} went down' : '{0} came up', what || t('an interface'));
+        return what ? t('firewall rebuilt ({0})', what) : t('firewall rebuilt');
+    });
+    return events.length ? source + ': ' + events.join(', ') : source;
+}
 
 function jobModalOpen() {
     return document.getElementById('jobModal').style.display === 'block';
@@ -2192,7 +2213,7 @@ function renderTasks() {
         const badge = job.step === 'lists' ? t('{0} of {1}', job.done, job.total) : '';
         html += taskSection(t('Running now'), 0, taskHtml({
             key: 'run', lead: '<span class="task-spin"></span>', title: t(JOB_TITLES[job.kind]),
-            meta: t(JOB_SOURCES[job.source] || job.source || 'Panel') + (job.started ? ' · ' + t('started {0}', jobTimeText(job.started)) : ''),
+            meta: jobSourceText(job) + (job.started ? ' · ' + t('started {0}', jobTimeText(job.started)) : ''),
             badge, steps: jobStepsHtml(job), note: jobNoteText(job), log: job.log, hasLog: true, stoppable: true,
         }));
     } else {
@@ -2201,14 +2222,14 @@ function renderTasks() {
     if (jobQueue.length) {
         html += taskSection(t('Queue'), jobQueue.length, jobQueue.map((item, i) => taskHtml({
             key: 'q:' + item.qid, lead: `<span class="task-pos">${i + 1}</span>`, title: t(JOB_TITLES[item.kind]),
-            meta: t(JOB_SOURCES[item.source] || item.source) + ' · ' + t('added {0}', jobAgo(item.added)), badge: '',
+            meta: jobSourceText(item) + ' · ' + t('added {0}', jobAgo(item.added)), badge: '',
             steps: (item.kind === 'sync' ? ['targets'].filter(() => item.targets.length).concat(['lists'].filter(() => item.lists.length), ['apply']) : JOB_STEPS[item.kind]).map(key => jobStepRow('', t(JOB_STEP_NAMES[key]))).join(''), note: '', hasLog: false, stoppable: false,
             remove: `<button type="button" class="icon-btn icon-btn-danger" data-qid="${escapeHtml(item.qid)}" title="${escapeHtml(t('Take out of the queue'))}">✕</button>`,
         })).join(''));
     }
     const history = jobHistoryItems.map(item => taskHtml({
         key: 'h:' + item.id, lead: `<span class="led ${{ done: 'led-green', cancelled: 'led-amber', error: 'led-red' }[item.state] || 'led-grey'}"></span>`, title: t(JOB_TITLES[item.kind]),
-        meta: t(JOB_SOURCES[item.source] || item.source) + ' · ' + jobAgo(item.finished) + ' · ' + jobDuration(item), badge: '',
+        meta: jobSourceText(item) + ' · ' + jobAgo(item.finished) + ' · ' + jobDuration(item), badge: '',
         steps: jobStepsHtml(item), note: jobNoteText(item), log: taskLogs['h:' + item.id], hasLog: true, stoppable: false,
     })).join('') || `<p class="card-note">${escapeHtml(t('No finished tasks yet'))}</p>`;
     html += taskSection(t('History'), jobHistoryItems.length, history,
@@ -2932,7 +2953,7 @@ async function refreshBirdPolicyOptions() {
         if (!Array.isArray(r.policies)) return;
         const keep = sel.value;
         birdHookPolicies = r.policies;
-        sel.innerHTML = r.policies.map(p => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.description ? p.description + ' (' + p.name + ')' : p.name)}</option>`).join('')
+        sel.innerHTML = r.policies.map(p => policyOption(p.name, p, false)).join('')
             || '<option value="">No policies - create one in Keenetic and sync</option>';
         if (r.policies.some(p => p.name === keep)) sel.value = keep;
         renderBirdPreview();
@@ -2962,7 +2983,7 @@ async function loadBirdHook() {
         tunnel.value = cur ? cur.iface : (firstUp ? firstUp.system : '');
 
         const policy = document.getElementById('birdPolicy');
-        policy.innerHTML = r.policies.map(p => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.description ? p.description + ' (' + p.name + ')' : p.name)}</option>`).join('')
+        policy.innerHTML = r.policies.map(p => policyOption(p.name, p, false)).join('')
             || '<option value="">No policies - create one in Keenetic and sync</option>';
         if (cur) policy.value = cur.policy;
 
@@ -3715,7 +3736,7 @@ function renderClients(filterText = '') {
     const policyNames = Object.keys(policyCount).filter(name => name !== '').sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
     if (clientPolicy !== 'all' && !(clientPolicy === '__none__' ? policyCount[''] : policyCount[clientPolicy])) clientPolicy = 'all';
     const policyOptions = [`<option value="all">${escapeHtml(t('All policies'))} (${allClients.length})</option>`]
-        .concat(policyNames.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)} (${policyCount[name]})</option>`));
+        .concat(policyNames.map(name => `<option value="${escapeHtml(name)}" data-notr>${escapeHtml(policyFind(name) ? policyText(policyFind(name)) : name)} (${policyCount[name]})</option>`));
     if (policyCount['']) policyOptions.push(`<option value="__none__">${escapeHtml(t('No policy'))} (${policyCount['']})</option>`);
     const policySelect = document.getElementById('clientsPolicy');
     policySelect.innerHTML = policyOptions.join('');
@@ -3765,7 +3786,7 @@ function renderClients(filterText = '') {
             <td class="cell-domain" data-label="Name" data-col="name"><span data-notr>${escapeHtml(c.name || '(no name)')}</span>${c.registered ? '' : ` <span class="chip chip-warn">${escapeHtml(t('Not registered'))}</span>`}</td>
             <td class="cell-mono" data-label="IP" data-col="ip">${hasIp ? escapeHtml(c.ip) : '<span class="muted">-</span>'}</td>
             <td class="cell-mono" data-label="MAC" data-col="mac">${escapeHtml(c.mac)}</td>
-            <td data-label="Policy" data-col="policy">${c.policy ? `<span class="chip" data-notr>${escapeHtml(c.policy)}</span>` : '<span class="muted">-</span>'}</td>
+            <td data-label="Policy" data-col="policy">${c.policy ? `<span class="chip">${policyHtml(c.policy)}</span>` : '<span class="muted">-</span>'}</td>
             <td class="cell-mono" data-label="Uptime" data-col="uptime">${c.online ? formatUptime(c.uptime) : '<span class="muted">-</span>'}</td>
             <td class="cell-mono" data-label="Down / Up" data-col="down-up"><span class="traffic-rx">↓ ${formatBytes(c.rxbytes)}</span> / <span class="traffic-tx">↑ ${formatBytes(c.txbytes)}</span></td>
             <td data-label="Connection" data-col="connection">${c.online ? `<span class="conn">${connIcon}<span class="conn-text"><span class="conn-type">${connType}</span>${c.via ? '<span class="conn-via">' + escapeHtml(t('via {0}', c.via)) + '</span>' : ''}${speed ? '<span class="conn-speed">' + escapeHtml(speed) + '</span>' : ''}</span></span>` : '<span class="muted">-</span>'}</td>
@@ -3918,7 +3939,7 @@ function renderConnections() {
             const tableNote = c.table
                 ? ` (table ${escapeHtml(String(c.table))}${c.table_confirmed ? '' : ', assumed'})`
                 : '';
-            detailParts.push(`<span class="conn-policy">via <strong>${escapeHtml(c.policy)}</strong>${tableNote}</span>`);
+            detailParts.push(`<span class="conn-policy">via <strong>${policyHtml(c.policy)}</strong>${tableNote}</span>`);
         } else if (c.mark) {
             detailParts.push(`<span class="conn-policy muted">mark 0x${c.mark.toString(16)} (not one of our policies)</span>`);
         } else if (c.table && c.table !== 'main') {
@@ -4096,7 +4117,7 @@ function renderClientManage(mac) {
     document.getElementById('clientRegBtn').textContent = t(c.registered ? 'Rename' : 'Register');
     document.getElementById('clientUnregBtn').hidden = !c.registered;
     const options = [`<option value="">${escapeHtml(t('Default policy'))}</option>`].concat(
-        state.policies.filter(p => p.name !== 'DELETED').map(p => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.description || p.name)} (${escapeHtml(p.name)})</option>`));
+        state.policies.filter(p => p.name !== 'DELETED').map(p => policyOption(p.name, p, false)));
     if (c.policy && !state.policies.some(p => p.name === c.policy)) options.push(`<option value="${escapeHtml(c.policy)}">${escapeHtml(c.policy)}</option>`);
     const sel = document.getElementById('clientPolicySel');
     sel.innerHTML = options.join('');
@@ -4197,7 +4218,9 @@ function openPolicyRoutes(policyName) {
     const titleEl = document.getElementById('policyRoutesTitle');
     const listEl = document.getElementById('policyRoutesList');
 
-    titleEl.textContent = `Routes - ${policyName}`;
+    const known = policyFind(policyName);
+    titleEl.textContent = t('Routes - {0}', known ? policyText(known) : policyName);
+    titleEl.dataset.notr = '';
 
     const info = policyRoutesData[policyName];
     const routes = (info && info.routes) || [];
@@ -4323,7 +4346,7 @@ function renderDrift() {
     let html = '';
     for (const [table, rows] of Object.entries(byTable)) {
         const info = r.tables[table] || { policy: '?', kind: 'targets' };
-        html += `<div class="drift-table"><h3><span data-notr>${escapeHtml(info.policy)}</span> · ${escapeHtml(t(info.kind === 'lists' ? 'lists' : 'targets'))} (${escapeHtml(t('table {0}', table))})</h3>`;
+        html += `<div class="drift-table"><h3>${policyHtml(info.policy)} · ${escapeHtml(t(info.kind === 'lists' ? 'lists' : 'targets'))} (${escapeHtml(t('table {0}', table))})</h3>`;
         for (const d of rows) {
             const [cls, label] = DRIFT_KINDS[d.kind];
             let what = `<code data-notr>${escapeHtml(d.dest)}</code>`;
@@ -4353,6 +4376,76 @@ document.getElementById('driftApply').addEventListener('click', () => {
     startJob('apply');
 });
 
+// ---- backup exit. The server decides at every apply; here only what it decided is shown.
+let failoverState = {};
+async function loadFailover() {
+    try {
+        failoverState = (await (await apiFetch(API + '?action=getFailover')).json()).failover || {};
+    } catch (error) {
+        failoverState = {};
+    }
+    renderFailoverBanner();
+}
+
+// The main interface a target or list is moved away from right now, or null
+function failoverOf(kind, id) {
+    for (const [main, f] of Object.entries(failoverState)) {
+        if ((f[kind] || []).includes(id)) return { main, ...f };
+    }
+    return null;
+}
+
+// An interface by its Keenetic id or kernel name, with the description the user gave it: "Wireguard2 (amnezia, nwg2)"
+function ifaceLabel(idOrSystem) {
+    const i = interfaceChoices.find(x => x.id === idOrSystem || x.system === idOrSystem);
+    if (!i) return String(idOrSystem || '');
+    const name = i.id || i.system;
+    const extra = [i.description, i.system !== name ? i.system : ''].filter(Boolean).join(', ');
+    return extra ? name + ' (' + extra + ')' : name;
+}
+
+function failoverReason(f) {
+    const who = ifaceLabel(f.main_id || f.main);
+    return f.why === 'check' ? t('{0} fails the connectivity check', who) : f.why === 'not_connected' ? t('{0} is not connected', who) : t(f.reason);
+}
+
+// A cell of the Interface/Gateway columns: the main value, and while on the backup the struck main value -> the backup
+function exitCell(main, backup, failover) {
+    if (failover && (main || backup)) {
+        const tip = t('{0} since {1}: the backup exit is used, the main one comes back by itself', failoverReason(failover), jobTimeText(failover.since));
+        return `<span class="exit-main-off">${escapeHtml(main || '—')}</span> → <span class="chip exit-backup" title="${escapeHtml(tip)}">${escapeHtml(backup || '—')} · ${escapeHtml(t('backup'))}</span>`;
+    }
+    const plain = escapeHtml(main) || '<span class="muted">—</span>';
+    return backup ? `${plain} <span class="exit-has-backup" title="${escapeHtml(t('Backup exit: {0}', backup))}">⇄</span>` : plain;
+}
+
+function renderFailoverBanner() {
+    const box = document.getElementById('failoverBanner');
+    const items = Object.entries(failoverState);
+    box.hidden = !items.length;
+    box.innerHTML = items.map(([main, f]) => `<div data-notr>⚠ ${escapeHtml(t('{0} since {1}: {2} targets and {3} lists are on the backup exit {4}', failoverReason({ main, ...f }), jobTimeText(f.since), f.targets.length, f.lists.length, ifaceLabel(f.backup)))}</div>`).join('');
+}
+
+// The backup exit block of the target and list forms
+function fillBackupExit(prefix, iface, gateway) {
+    fillInterfaceSelect(prefix + 'BackupInterface', iface || '');
+    document.getElementById(prefix + 'BackupGateway').value = gateway || '';
+    const set = !!(iface || gateway);
+    document.getElementById(prefix + 'BackupBox').open = set;
+    document.getElementById(prefix + 'BackupSummary').textContent = set ? '· ' + (iface || gateway) : '';
+}
+
+// Every gateway field offers the gateways already used by targets and lists, the most used first
+function refreshGatewaySuggestions() {
+    const used = {};
+    for (const item of state.domains.concat(listsData)) {
+        if (item.gateway) used[item.gateway] = (used[item.gateway] || 0) + 1;
+    }
+    document.getElementById('gatewaySuggestions').innerHTML = Object.entries(used)
+        .sort((a, b) => b[1] - a[1])
+        .map(([gw, count]) => `<option value="${escapeHtml(gw)}" label="${escapeHtml(t('used {0} times', count))}"></option>`).join('');
+}
+
 // Counters next to the menu items: targets and policies come from the loaded lists.
 function updateNavCounts() {
     document.getElementById('cntDomains').textContent = state.domains.filter(d => d.policy_name !== 'DELETED').length;
@@ -4371,7 +4464,7 @@ let interfacesData = [];
 let interfaceChoices = [];
 const TUNNEL_TYPES = ['Wireguard', 'OpenVPN', 'IPsec', 'L2TP', 'PPTP', 'SSTP', 'Gre', 'Ipip', 'Eoip'];
 const HIDDEN_TYPES = ['Port', 'WifiMaster', 'AccessPoint', 'WifiStation', 'Bridge'];
-const INTERFACE_SELECTS = ['bulkInterface', 'domainInterface', 'catalogInterface', 'listInterface', 'panelNetInterface', 'dpiIsp', 'dpiTun'];
+const INTERFACE_SELECTS = ['domainBackupInterface', 'listBackupInterface', 'bulkBackupInterface', 'customListInterface', 'bulkInterface', 'domainInterface', 'catalogInterface', 'listInterface', 'panelNetInterface', 'dpiIsp', 'dpiTun'];
 
 // Fills an interface drop-down with the router's interfaces (system names such as nwg0, eth3) and picks the value
 function fillInterfaceSelect(id, value) {
@@ -4406,6 +4499,9 @@ async function loadInterfaceChoices() {
         interfaceChoices = [];
     }
     INTERFACE_SELECTS.forEach(id => fillInterfaceSelect(id, document.getElementById(id).value));
+    // the names of the interfaces arrived: the backup exit texts can say "Wireguard2 (amnezia)" now
+    renderFailoverBanner();
+    if (state.domains.length) renderDomains(document.getElementById('searchDomains').value);
 }
 let currentInterfaceId = null;
 let interfaceStatAutoRefreshTimer = null;
@@ -4602,6 +4698,7 @@ function openInterfaceDetail(id) {
     const facts = buildInterfaceFacts(iface);
     factsEl.innerHTML = facts.length ? facts.join('') : '<div class="route-line-item muted">No extra static info</div>';
     renderInterfaceControl(iface);
+    loadPingCheck(iface.id);
     document.getElementById('interfaceDetailStat').innerHTML = '<div class="route-line-item muted">Loading traffic stats…</div>';
 
     modal.style.display = 'block';
@@ -5141,10 +5238,26 @@ function listStatus(l) {
     return { cls: 'led-red', label: 'Source error' };
 }
 
+// A policy everywhere as its Keenetic name plus its description; both are the user's words, never translated
+function policyFind(nameOrId) {
+    return state.policies.find(p => p.name === nameOrId || p.id === nameOrId) || null;
+}
+function policyText(p) {
+    return p.description ? p.name + ' — ' + p.description : p.name;
+}
+function policyHtml(nameOrId) {
+    const p = policyFind(nameOrId);
+    if (!p) return `<span data-notr>${escapeHtml(String(nameOrId || '—'))}</span>`;
+    return `<span data-notr>${escapeHtml(p.name)}</span>${p.description ? ` <span class="policy-desc-inline" data-notr>${escapeHtml(p.description)}</span>` : ''}`;
+}
+function policyOption(value, p, selected) {
+    return `<option value="${escapeHtml(String(value))}"${selected ? ' selected' : ''} data-notr>${escapeHtml(policyText(p))}</option>`;
+}
+
 function policyOptions(selected) {
     return state.policies
         .filter(p => p.name !== 'DELETED')
-        .map(p => `<option value="${p.id}"${p.id == selected ? ' selected' : ''}>${escapeHtml(p.description || p.name)} (${escapeHtml(p.name)})</option>`)
+        .map(p => policyOption(p.id, p, p.id == selected))
         .join('');
 }
 
@@ -5235,6 +5348,7 @@ async function loadLists() {
         if (!r.lists) throw new Error(r.error || t('The router did not answer'));
         setLists(r.lists);
         listsInfo = r;
+        refreshGatewaySuggestions();
     } catch (e) {
         document.getElementById('listsList').innerHTML = `<tr><td colspan="8" class="loading">${escapeHtml(e.message)}</td></tr>`;
         return;
@@ -5289,7 +5403,7 @@ function renderLists() {
             const routes = inPolicy.reduce((sum, l) => sum + (l.enabled ? l.n_items : 0), 0);
             const collapsed = !q && listGroupsCollapsed.has(p.id);
             const head = `<tr class="policy-group" style="--policy-hue:${policyHue(p.id)}"><td colspan="8"><div class="policy-group-row">
-                <div class="policy-group-left"><button class="policy-toggle" data-policy="${p.id}">${collapsed ? '▸' : '▾'}</button><span class="policy-dot"></span><span class="policy-name" data-policy="${p.id}">${escapeHtml(p.name)}</span>${p.description ? `<span class="policy-desc">${escapeHtml(p.description)}</span>` : ''}</div>
+                <div class="policy-group-left"><button class="policy-toggle" data-policy="${p.id}">${collapsed ? '▸' : '▾'}</button><span class="policy-dot"></span><span class="policy-name" data-policy="${p.id}" data-notr>${escapeHtml(p.name)}</span>${p.description ? `<span class="policy-desc" data-notr>${escapeHtml(p.description)}</span>` : ''}</div>
                 <div class="policy-meta"><span class="meta-mark">mark <code>${escapeHtml(p.mark_hex)}</code></span> <span class="meta-table">table ${Number(p.our_table) + 100}</span> <span class="meta-count">${t('{0} list(s)', inPolicy.length)}</span> <span class="meta-table">${t('{0} networks', routes)}</span></div>
             </div></td></tr>`;
             const empty = `<tr class="domain-row"><td colspan="8" class="loading">${escapeHtml(t('No lists in this policy'))}</td></tr>`;
@@ -5384,6 +5498,7 @@ function renderEntries() {
 
 // How the list gets its addresses: networks straight from the source (CIDR + IP) or the source's domains resolved by our DNS
 function listSourcePill(l) {
+    if (l.source === 'custom') return ` <span class="mode-pill mode-src mode-own" title="${escapeHtml(t('Own list'))}">${escapeHtml(t('own'))}</span>`;
     const sources = listsInfo.sources || [];
     if (sources.length < 2) return '';
     const known = sources.find(s => s.name === l.source) || sources[0];
@@ -5612,6 +5727,90 @@ function renderCatalogStep2() {
     add.disabled = !todo.length || (!exit.interface && !exit.gateway);
     add.textContent = todo.length ? t('Add {0} lists', todo.length) : t('Nothing to add');
 }
+
+// ---- own lists: pasted text or a link; the server recognizes every line itself
+let listCustomShown = null;
+let customListId = 0;
+
+function customListSource() {
+    return document.querySelector('#customListSource button.active').dataset.v;
+}
+
+function setCustomListSource(v) {
+    document.querySelectorAll('#customListSource button').forEach(b => b.classList.toggle('active', b.dataset.v === v));
+    document.getElementById('customListTextBox').hidden = v !== 'text';
+    document.getElementById('customListUrlBox').hidden = v !== 'url';
+    document.getElementById('customListResult').hidden = true;
+}
+
+function openCustomList(list) {
+    customListId = list ? list.id : 0;
+    document.getElementById('customListTitle').textContent = t(list ? 'Own list' : 'New own list');
+    document.getElementById('customListName').value = list ? list.site : '';
+    document.getElementById('customListText').value = list ? list.custom_text : '';
+    document.getElementById('customListUrl').value = list ? list.custom_url : '';
+    setCustomListSource(list && list.custom_url ? 'url' : 'text');
+    const policyId = list ? list.policy_id : (state.policies.find(p => p.name !== 'DELETED') || {}).id;
+    document.getElementById('customListPolicy').innerHTML = policyOptions(policyId);
+    fillInterfaceSelect('customListInterface', list ? list.interface : '');
+    document.getElementById('customListGateway').value = list ? list.gateway : '';
+    document.getElementById('customListMsg').textContent = '';
+    document.getElementById('customListModal').style.display = 'block';
+}
+
+function customListPayload() {
+    return customListSource() === 'url'
+        ? { url: document.getElementById('customListUrl').value.trim() }
+        : { text: document.getElementById('customListText').value };
+}
+
+document.getElementById('addCustomListBtn').addEventListener('click', () => openCustomList(null));
+document.getElementById('listEditContents').addEventListener('click', () => { if (listCustomShown) openCustomList(listCustomShown); });
+document.getElementById('customListClose').addEventListener('click', () => { document.getElementById('customListModal').style.display = 'none'; });
+document.getElementById('customListSource').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (b) setCustomListSource(b.dataset.v);
+});
+
+document.getElementById('customListPreview').addEventListener('click', async () => {
+    const box = document.getElementById('customListResult');
+    box.hidden = false;
+    box.innerHTML = `<div class="res-row res-work"><i class="spin"></i><span>${escapeHtml(t('Checking…'))}</span></div>`;
+    const r = await api({ action: 'previewCustomList', ...customListPayload() });
+    if (r.error) {
+        box.innerHTML = `<div class="res-row res-bad"><i></i><span>${escapeHtml(t(r.error))}</span></div>`;
+        return;
+    }
+    const row = (cls, text) => `<div class="res-row res-${cls}"><i></i><span>${text}</span></div>`;
+    let html = row('ok', escapeHtml(t('Domains: {0} · networks: {1} · addresses: {2}', r.domains, r.cidrs, r.addresses)));
+    if (r.domains) html += row('ok', escapeHtml(t('The domains are resolved through your DNS on every update of the lists')));
+    if (r.rejected) html += row('warn', escapeHtml(t('{0} entries are private or reserved networks: they are left out', r.rejected)));
+    if (r.skipped_count) {
+        html += row('warn', escapeHtml(t('Lines skipped: {0}', r.skipped_count)));
+        html += `<div class="ent-list">${r.skipped.map(([line, why]) => `<div class="ent"><span data-notr>${escapeHtml(line)}</span><i>${escapeHtml(t(why))}</i></div>`).join('')}</div>`;
+    }
+    if (r.examples.length) html += `<div class="card-note">${escapeHtml(t('For example:'))} <span data-notr>${escapeHtml(r.examples.join(', '))}</span></div>`;
+    box.innerHTML = html;
+});
+
+document.getElementById('customListSave').addEventListener('click', async () => {
+    const msg = document.getElementById('customListMsg');
+    const r = await api({
+        action: 'saveCustomList', id: customListId,
+        name: document.getElementById('customListName').value,
+        ...customListPayload(),
+        policy_id: +document.getElementById('customListPolicy').value,
+        interface: document.getElementById('customListInterface').value,
+        gateway: document.getElementById('customListGateway').value.trim(),
+        excl: listCustomShown && customListId ? document.getElementById('listExcl').value : '',
+    });
+    if (r.error) { msg.textContent = t(r.error); return; }
+    document.getElementById('customListModal').style.display = 'none';
+    document.getElementById('listModal').style.display = 'none';
+    showToast(t('The list is saved and being updated'), 'success');
+    loadLists();
+    pollJob();
+});
 
 document.getElementById('addListBtn').addEventListener('click', () => {
     catalogSel.clear();
@@ -5867,10 +6066,18 @@ async function openList(id, fresh) {
     document.getElementById('listExcl').value = r.excl;
     fillInterfaceSelect('listInterface', r.interface);
     document.getElementById('listGateway').value = r.gateway;
+    fillBackupExit('list', r.backup_interface, r.backup_gateway);
     document.getElementById('listMode').value = r.mode;
     document.getElementById('listEnabled').checked = !!r.enabled;
+    // an own list routes what its text holds: no mode to pick, its contents are edited in their own window
+    const own = r.source === 'custom';
+    listCustomShown = own ? r : null;
+    document.getElementById('listCustomBox').hidden = !own;
+    document.getElementById('listModeBox').hidden = own;
+    document.getElementById('listUrlsBox').hidden = own;
+    if (own) document.getElementById('listCustomWhat').textContent = r.custom_url ? r.custom_url : t('Pasted text: {0} lines', r.custom_text.split('\n').filter(x => x.trim()).length);
     listUrls = r.urls;
-    renderListUrls();
+    if (!own) renderListUrls();
     switchListPane('info');
     document.getElementById('listModal').style.display = 'block';
 }
@@ -5931,6 +6138,8 @@ document.getElementById('listSaveBtn').addEventListener('click', async () => {
         interface: document.getElementById('listInterface').value,
         gateway: document.getElementById('listGateway').value,
         enabled: document.getElementById('listEnabled').checked,
+        backup_interface: document.getElementById('listBackupInterface').value,
+        backup_gateway: document.getElementById('listBackupGateway').value.trim(),
     };
     listBusy(t('Saving the settings and starting the update…'));
     const r = await api(body);
@@ -6043,7 +6252,7 @@ function renderTargetDetail() {
     document.getElementById('targetInfo').innerHTML = `
         <div class="tg-meta">
             <div><span class="sum-k">${escapeHtml(t('Status'))}</span><span class="status-pill"><span class="led ${status.cls}"></span><span class="status-label">${escapeHtml(t(status.label))}</span></span></div>
-            <div><span class="sum-k">${escapeHtml(t('Policy'))}</span><span>${escapeHtml(policy ? policy.name : '—')}</span></div>
+            <div><span class="sum-k">${escapeHtml(t('Policy'))}</span><span>${policy ? policyHtml(policy.id) : '—'}</span></div>
             <div><span class="sum-k">${escapeHtml(t('Interface'))}</span><span class="cell-mono">${escapeHtml(d.interface) || '—'}</span></div>
             <div><span class="sum-k">${escapeHtml(t('Gateway'))}</span><span class="cell-mono">${escapeHtml(d.gateway) || '—'}</span></div>
             <div><span class="sum-k">${escapeHtml(t('Last check'))}</span><span class="cell-mono">${last ? escapeHtml(i18nDate(last)) : '—'}</span></div>
@@ -6372,6 +6581,177 @@ document.getElementById('ifDescSave').addEventListener('click', async () => {
     loadInterfaceChoices();
 });
 
+// Connectivity check (Keenetic ping-check) of the interface. The panel edits only its own profile dnsr-<interface>.
+let pingCheckShown = null;
+async function loadPingCheck(id) {
+    const box = document.getElementById('pingCheckBox');
+    pingCheckShown = null;
+    box.hidden = true;
+    const r = await (await apiFetch(API + '?action=getPingCheck&id=' + encodeURIComponent(id))).json();
+    if (id !== currentInterfaceId || r.error) return;
+    pingCheckShown = r.check;
+    const c = r.check;
+    const status = document.getElementById('pcStatus');
+    if (!c) {
+        status.innerHTML = `<span class="muted">${escapeHtml(t('Not set'))}</span>`;
+    } else {
+        const ok = c.status === 'pass';
+        const what = c.status === '' ? t('starting') : ok ? t('passes') : t('fails');
+        status.innerHTML = `<span class="led ${ok ? 'led-green' : c.status === '' ? 'led-grey' : 'led-red'}"></span> ${escapeHtml(what)} <span class="muted">· ${escapeHtml(t('ok {0}, failed {1}', c.successcount, c.failcount))}</span>`;
+    }
+    const foreign = c && !c.ours;
+    document.getElementById('pcForeign').hidden = !foreign;
+    document.getElementById('pcForeign').textContent = foreign ? t('The profile "{0}" is set in the Keenetic web interface: {1}, every {2} s, {3} failures. The panel does not change it.', c.profile, c.hosts.join(', '), c.interval, c.max_fails) : '';
+    document.getElementById('pcForm').hidden = foreign;
+    document.getElementById('pcHosts').value = c ? c.hosts.join(' ') : '1.1.1.1';
+    document.getElementById('pcMode2').value = c && c.mode ? c.mode : 'icmp';
+    document.getElementById('pcPort').value = c && c.port ? c.port : 443;
+    document.getElementById('pcPortBox').hidden = !['connect', 'tls'].includes(document.getElementById('pcMode2').value);
+    document.getElementById('pcInterval').value = String(c && [10, 30, 60].includes(c.interval) ? c.interval : 10);
+    document.getElementById('pcFails').value = String(c && [3, 5, 10].includes(c.max_fails) ? c.max_fails : 3);
+    const watch = !c || c.ignore_fail;
+    document.querySelectorAll('#pcMode button').forEach(b => b.classList.toggle('active', (b.dataset.v === 'watch') === watch));
+    document.getElementById('pcRemove').hidden = !c;
+    box.hidden = false;
+}
+
+document.getElementById('pcMode2').addEventListener('change', (e) => {
+    document.getElementById('pcPortBox').hidden = !['connect', 'tls'].includes(e.target.value);
+});
+
+// On a check card: is this interface the main exit someone left, or the backup someone uses
+function pingCheckFailoverLine(iface) {
+    if (!iface) return '';
+    const lines = [];
+    for (const [main, f] of Object.entries(failoverState)) {
+        if (main === iface.system) lines.push(`<b class="warn">${escapeHtml(t('Backup on since {0}', jobTimeText(f.since)))}</b>: ${escapeHtml(t('{0} targets and {1} lists went to {2}', f.targets.length, f.lists.length, ifaceLabel(f.backup)))}`);
+        if (f.backup === iface.system) lines.push(escapeHtml(t('Carries now as the backup of {0}: {1} targets, {2} lists', ifaceLabel(f.main_id || main), f.targets.length, f.lists.length)));
+    }
+    return lines.length ? `<div class="pc-failover">${lines.join('<br>')}</div>` : '';
+}
+
+// All checks at once: useful with many interfaces
+const PC_MODES = { icmp: 'ICMP (ping)', connect: 'TCP port', tls: 'TLS on a TCP port', auto: 'Automatic' };
+// One card per interface: what is checked, how, how far from the threshold, how it went so far.
+// While the window is open it refreshes every 10 s (the interval Keenetic checks at).
+let pingChecksTimer = null;
+async function loadPingChecks() {
+    clearTimeout(pingChecksTimer);
+    const list = document.getElementById('pingChecksList');
+    if (!list.children.length) list.innerHTML = `<div class="muted">${escapeHtml(t('Loading…'))}</div>`;
+    const r = await (await apiFetch(API + '?action=getPingChecks')).json();
+    await loadFailover();
+    if (document.getElementById('pingChecksModal').style.display !== 'block') return;
+    pingChecksTimer = setTimeout(loadPingChecks, 10000);
+    if (r.error) {
+        list.innerHTML = `<div class="muted">${escapeHtml(t(r.error))}</div>`;
+        return;
+    }
+
+    const cards = [];
+    for (const p of r.profiles) {
+        for (const i of p.interfaces) cards.push({ ...i, p });
+    }
+    const passing = cards.filter(c => c.status === 'pass').length;
+    const failing = cards.filter(c => c.status && c.status !== 'pass' && c.successcount + c.failcount > 0).length;
+    let html = `<div class="pc-summary">
+        <span class="pc-sum">${escapeHtml(t('Checks:'))} <b>${cards.length}</b></span>
+        <span class="pc-sum ok">${escapeHtml(t('Pass:'))} <b>${passing}</b></span>
+        <span class="pc-sum ${failing ? 'bad' : ''}">${escapeHtml(t('Fail:'))} <b>${failing}</b></span>
+        <span class="muted pc-sum-note">${escapeHtml(t('Refreshes every 10 s'))}</span>
+    </div><div class="pc-cards">`;
+
+    for (const c of cards) {
+        const iface = interfacesData.find(x => x.id === c.id);
+        const total = c.successcount + c.failcount;
+        // a fresh profile reports "fail" before its first ping: that is "waiting", not a failure
+        const state = total === 0 ? 'wait' : c.status === 'pass' ? 'pass' : 'fail';
+        const stateText = { wait: t('Waiting for the first check'), pass: t('Passes'), fail: t('Fails') }[state];
+        const rate = total ? Math.round(c.successcount * 100 / total) : null;
+        const threshold = Math.max(1, c.p.max_fails);
+        const streak = Math.min(c.failcount, threshold);
+        const how = t(PC_MODES[c.p.mode] || c.p.mode) + (['connect', 'tls'].includes(c.p.mode) && c.p.port ? ' :' + c.p.port : '');
+        const link = iface ? (iface.connected ? t('connected') : t('not connected')) : '';
+        html += `<div class="pc-card pc-${state}">
+            <div class="pc-card-head">
+                <span class="pc-state"><i></i>${escapeHtml(stateText)}</span>
+                <button type="button" class="btn btn-small" data-click="ifaceDetail" data-id="${escapeHtml(c.id)}">${escapeHtml(t('Set up'))}</button>
+            </div>
+            <div class="pc-name"><span data-notr>${escapeHtml(c.id)}</span>${iface && iface.description ? ` <span class="muted" data-notr>${escapeHtml(iface.description)}</span>` : ''}</div>
+            <div class="pc-chips">
+                <span class="chip">${escapeHtml(how)}</span>
+                ${c.p.hosts.map(h => `<span class="chip chip-mono" data-notr>${escapeHtml(h)}</span>`).join('')}
+                <span class="chip">${escapeHtml(t('every {0} s', c.p.interval))}</span>
+            </div>
+            <div class="pc-meter" title="${escapeHtml(t('Failures in a row before the check counts as failed'))}">
+                <div class="pc-meter-bar">${Array.from({ length: threshold }, (_, n) => `<span class="${n < streak ? 'on' : ''}"></span>`).join('')}</div>
+                <span class="muted">${escapeHtml(t('{0} of {1} failures in a row', streak, threshold))}</span>
+            </div>
+            <div class="pc-facts">
+                <span><b>${rate === null ? '—' : rate + '%'}</b> ${escapeHtml(t('of the checks passed'))}</span>
+                <span class="muted">${escapeHtml(t('ok {0}, failed {1}', c.successcount, c.failcount))}</span>
+            </div>
+            ${pingCheckFailoverLine(iface)}
+            <div class="pc-foot muted">
+                <span>${escapeHtml(t(c.ignore_fail ? 'Only watches: the interface stays on' : 'Turns the interface off on failure'))}</span>
+                <span>${link ? escapeHtml(t('Interface: {0}', link)) + ' · ' : ''}<span data-notr>${escapeHtml(c.p.profile)}</span> · ${escapeHtml(t(c.p.ours ? 'made by the panel' : 'made in Keenetic'))}</span>
+            </div>
+        </div>`;
+    }
+    html += '</div>';
+
+    // tunnels without any check: one click to set one up
+    const checked = new Set(cards.map(c => c.id));
+    const bare = interfacesData.filter(i => TUNNEL_TYPES.includes(i.type) && !checked.has(i.id));
+    if (bare.length) {
+        html += `<div class="pc-bare"><span class="muted">${escapeHtml(t('Tunnels without a check:'))}</span> ${bare.map(i => `<button type="button" class="chip pc-add" data-click="ifaceDetail" data-id="${escapeHtml(i.id)}" data-notr>+ ${escapeHtml(i.id + (i.description ? ' · ' + i.description : ''))}</button>`).join(' ')}</div>`;
+    }
+    if (!cards.length && !bare.length) html = `<div class="muted">${escapeHtml(t('No connectivity checks are set'))}</div>`;
+    list.innerHTML = html;
+}
+document.getElementById('pingChecksBtn').addEventListener('click', () => {
+    document.getElementById('pingChecksModal').style.display = 'block';
+    loadPingChecks();
+});
+document.getElementById('pingChecksRefresh').addEventListener('click', loadPingChecks);
+document.getElementById('pingChecksClose').addEventListener('click', () => {
+    clearTimeout(pingChecksTimer);
+    document.getElementById('pingChecksModal').style.display = 'none';
+});
+
+document.getElementById('pcMode').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    document.querySelectorAll('#pcMode button').forEach(x => x.classList.toggle('active', x === b));
+});
+
+document.getElementById('pcSave').addEventListener('click', async () => {
+    const iface = interfacesData.find(i => i.id === currentInterfaceId);
+    if (!iface) return;
+    const watch = document.querySelector('#pcMode button.active').dataset.v === 'watch';
+    if (!watch && !confirm(t('When the check fails, Keenetic turns {0} off for the whole router, the internet through it included. Go on?', iface.name))) return;
+    const r = await rciCall({
+        action: 'setPingCheck', id: iface.id, watch: watch ? 1 : 0,
+        hosts: document.getElementById('pcHosts').value,
+        mode: document.getElementById('pcMode2').value,
+        port: +document.getElementById('pcPort').value,
+        interval: +document.getElementById('pcInterval').value,
+        max_fails: +document.getElementById('pcFails').value,
+    }, 'Connectivity check');
+    if (r.error || r.dry_run) return;
+    showToast(t('Connectivity check saved'), 'success');
+    setTimeout(() => loadPingCheck(iface.id), 1500);
+});
+
+document.getElementById('pcRemove').addEventListener('click', async () => {
+    const iface = interfacesData.find(i => i.id === currentInterfaceId);
+    if (!iface || !confirm(t('Remove the connectivity check of {0}?', iface.name))) return;
+    const r = await rciCall({ action: 'removePingCheck', id: iface.id }, 'Remove the check');
+    if (r.error || r.dry_run) return;
+    showToast(t('Connectivity check removed'), 'success');
+    loadPingCheck(iface.id);
+});
+
 // ============================================ DPI CHECK ============================================
 // One order everywhere: the check boxes, the order the tests run in, the result tabs and the Lists window
 const DPI_ORDER = ['dns', 'domains', 'tcp', 'sni', 'tg'];
@@ -6570,7 +6950,7 @@ function dpiRenderDomains(run, keys) {
         });
         const route = run.targets[d.domain];
         let target = '';
-        if (route) target = `<span class="chip" data-notr>${escapeHtml(route.policy)}</span><span class="dpi-sub">${escapeHtml(t(route.via === 'list' ? 'list {0}' : 'target {0}', route.what))}</span>`;
+        if (route) target = `<span class="chip">${policyHtml(route.policy)}</span><span class="dpi-sub">${escapeHtml(t(route.via === 'list' ? 'list {0}' : 'target {0}', route.what))}</span>`;
         else if (d.level !== 'ok' && d.level !== 'pending') target = `<button type="button" class="btn btn-small" data-add="${escapeHtml(d.domain)}">+ ${escapeHtml(t('Target'))}</button>`;
         html += `<td>${dpiVerdict(d.level, d.verdict)}</td><td>${target}</td></tr>`;
     });
