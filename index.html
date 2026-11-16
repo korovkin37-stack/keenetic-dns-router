@@ -77,7 +77,7 @@
                 <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h10a4 4 0 0 1 0 8H8"></path><path d="M7 5L4 8l3 3"></path></svg></span>
                 <div class="brand-text">
                     <h1>Keenetic DNS Router</h1>
-                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.40.1</button>
+                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.41.0</button>
                 </div>
             </div>
             <nav class="tabs" id="mainNav" aria-label="Sections">
@@ -100,6 +100,7 @@
                 <div class="dash-head"><span class="led led-grey" id="dashLed"></span><span id="dashRouter">Loading…</span><button class="icon-btn" id="dashboardRefreshBtn" title="Refresh">↻</button></div>
                 <span class="dash-chip"><span class="dash-chip-label">Uptime</span><span class="dash-chip-value" id="dashUptime">—</span></span>
                 <span class="dash-chip"><span class="dash-chip-label">Interfaces</span><span class="dash-chip-value" id="dashInterfaces">—</span></span>
+                <button type="button" class="dash-chip dash-chip-btn" id="dashDriftChip" title="Compare the routing tables of the router with the database"><span class="dash-chip-label">Routes</span><span class="dash-chip-value" id="dashDrift">—</span></button>
                 <span class="dash-chip" id="dashBirdChip" hidden><span class="dash-chip-label">bird</span><span class="dash-chip-value" id="dashBird" data-notr>—</span></span>
             </div>
         </aside>
@@ -946,6 +947,19 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
             <input type="text" id="tableViewFilter" placeholder="Filter (searches on the router, not just what's loaded)...">
             <div id="tableViewList" class="table-view-list"></div>
             <div id="tableViewStatus" class="table-view-status"></div>
+        </div>
+    </div>
+
+    <div id="driftModal" class="modal">
+        <div class="modal-content drift-content">
+            <button type="button" class="close" id="driftClose" aria-label="Close">&times;</button>
+            <h2>Tables and database</h2>
+            <p class="muted drift-summary" id="driftSummary"></p>
+            <div id="driftList" class="drift-list"></div>
+            <div class="form-actions">
+                <button type="button" class="btn" id="driftRecheck">Check again</button>
+                <button type="button" class="btn btn-primary" id="driftApply" title="Write the routes into the tables from what is stored: no DNS lookups, no downloads">Apply routes</button>
+            </div>
         </div>
     </div>
 

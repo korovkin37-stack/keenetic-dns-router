@@ -1503,6 +1503,23 @@
 "bird was not found: syntax check skipped": "bird не найден: проверка синтаксиса пропущена",
 "The panel is being updated: try again in a minute": "Панель обновляется: повторите через минуту",
 "An ip rule was not written, traffic does not reach the table: {0}": "Правило ip rule не записано, трафик не попадает в таблицу: {0}",
-"A target cannot be a /0 network: that is a default route for the whole policy": "Цель не может быть сетью /0: это маршрут по умолчанию для всей политики"
+"A target cannot be a /0 network: that is a default route for the whole policy": "Цель не может быть сетью /0: это маршрут по умолчанию для всей политики",
+"Compare the routing tables of the router with the database": "Сравнить таблицы маршрутизации роутера с базой",
+"Tables and database": "Таблицы и база",
+"Check again": "Проверить ещё раз",
+"{0} differ": "≠ {0}",
+"in sync": "совпадают",
+"Not in the router": "Нет в роутере",
+"Points elsewhere": "Ведёт не туда",
+"Not in the database": "Нет в базе",
+"ip rule is missing": "Нет ip rule",
+"Stale ip rule": "Лишнее ip rule",
+"Check failed": "Проверка не удалась",
+"The tables match the database: {0} routes checked.": "Таблицы совпадают с базой: проверено маршрутов: {0}.",
+"{0} differences. The routes are not written yet: \"Apply routes\" brings the tables to the database.": "Расхождений: {0}. Ничего ещё не записано: «Применить маршруты» приведёт таблицы к базе.",
+"The first {0} are shown.": "Показаны первые {0}.",
+"targets": "цели",
+"in the router": "в роутере",
+"must be": "должно быть"
 }
 }

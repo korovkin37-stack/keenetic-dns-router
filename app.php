@@ -1,5 +1,5 @@
 <?php
-const APP_VERSION = '5.40.1';
+const APP_VERSION = '5.41.0';
 const COOKIE_NAME = 'krdns_auth';
 const COOKIE_TTL = 604800;
 
@@ -708,20 +708,23 @@ function doSyncPolicies(SQLite3 $db) {
     return ['success' => true, 'added' => $added, 'updated' => $updated, 'removed' => $removed];
 }
 
-// Brings every policy table to what the targets and lists want. Rules of Keenetic's own tables (keenetic_table) are never touched.
-function doApplyRoutes(SQLite3 $db) {
+// What the policy tables must hold (from the targets and lists in the database) next to what the kernel holds now,
+// and the ip commands that bring one to the other. Only reads: the diagnostics show it, doApplyRoutes() runs it.
+// Rules of Keenetic's own tables (keenetic_table) and the BGP table are never looked at.
+function routePlan(SQLite3 $db) {
     $policies = [];
     $result = $db->query("SELECT id, name, mark_hex, our_table FROM policies WHERE name != 'DELETED'");
     while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
         $policies[$row['id']] = $row;
     }
     if (empty($policies)) {
-        return ['success' => false, 'error' => 'No active policies'];
+        return ['error' => 'No active policies'];
     }
 
     $prefs = routePrefs($db);
 
-    $domains = [];
+    $sources = [];
+    $domainCount = 0;
     $result = $db->query('SELECT d.id, d.domain, d.policy_id, d.interface, d.gateway, d.current_ip FROM domains d WHERE d.enabled = 1 AND d.current_ip IS NOT NULL');
     while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
         $policy_id = $row['policy_id'];
@@ -733,63 +736,104 @@ function doApplyRoutes(SQLite3 $db) {
         $ips = array_values(array_filter($ips, 'isValidRouteTarget'));
         if (empty($ips)) continue;
 
-        $interface = isValidInterface($row['interface']) ? $row['interface'] : '';
-        $gateway   = isValidGateway($row['gateway']) ? $row['gateway'] : '';
+        $interface = isValidInterface($row['interface']) ? (string)$row['interface'] : '';
+        $gateway   = isValidGateway($row['gateway']) ? (string)$row['gateway'] : '';
         if ($interface === '' && $gateway === '') continue;
 
-        $domains[] = [
-            'domain'    => $row['domain'],
+        $domainCount++;
+        $sources[] = [
+            'who'       => $row['domain'],
             'policy'    => $policies[$policy_id],
+            'table'     => $policies[$policy_id]['our_table'],
             'interface' => $interface,
             'gateway'   => $gateway,
             'ips'       => $ips,
         ];
     }
 
-    $lists = [];
-    $result = $db->query("SELECT policy_id, interface, gateway, items FROM lists WHERE enabled = 1 AND items != '' AND (interface != '' OR gateway != '')");
+    $listCount = 0;
+    $result = $db->query("SELECT site, policy_id, interface, gateway, items FROM lists WHERE enabled = 1 AND items != '' AND (interface != '' OR gateway != '')");
     while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
         if (!isset($policies[$row['policy_id']])) continue;
-        $lists[] = [
+        $listCount++;
+        $sources[] = [
+            'who'       => 'list ' . $row['site'],
             'policy'    => $policies[$row['policy_id']],
-            'is_list'   => true,
-            'interface' => isValidInterface($row['interface']) ? $row['interface'] : '',
-            'gateway'   => isValidGateway($row['gateway']) ? $row['gateway'] : '',
+            'table'     => listTable($policies[$row['policy_id']]['our_table']),
+            'interface' => isValidInterface($row['interface']) ? (string)$row['interface'] : '',
+            'gateway'   => isValidGateway($row['gateway']) ? (string)$row['gateway'] : '',
             'ips'       => explode("\n", $row['items']),
         ];
     }
 
-    // What every table must hold: destination (as ip prints it) => the route command
+    // What every table must hold: destination (as ip prints it) => the route command, its gateway/interface and who wants it
     $want = [];
     $policy_seen = [];
-    foreach (array_merge($lists, $domains) as $domain) {
-        $policy = $domain['policy'];
-        $table = !empty($domain['is_list']) ? listTable($policy['our_table']) : $policy['our_table'];
-        $policy_seen[$policy['id']] = true;
-        foreach ($domain['ips'] as $ip) {
+    foreach ($sources as $source) {
+        $table = $source['table'];
+        $policy_seen[$source['policy']['id']] = true;
+        foreach ($source['ips'] as $ip) {
             [$addr, $len] = array_pad(explode('/', trim($ip), 2), 2, '32');
             if (!isValidIPv4($addr)) continue;
             $len = (int)$len;
             $dest = $len === 32 ? $addr : long2ip(ip2long($addr) & (-1 << (32 - $len))) . '/' . $len;
             $line = 'route replace ' . $dest . ' table ' . $table;
-            if ($domain['gateway'])   $line .= ' via ' . $domain['gateway'];
-            if ($domain['interface']) $line .= ' dev ' . $domain['interface'];
-            $want[$table][$dest] = $line;
+            if ($source['gateway'] !== '')   $line .= ' via ' . $source['gateway'];
+            if ($source['interface'] !== '') $line .= ' dev ' . $source['interface'];
+            $want[$table][$dest] = ['line' => $line, 'via' => $source['gateway'], 'dev' => $source['interface'], 'who' => $source['who']];
         }
     }
 
-    // The tables are never emptied: new routes are written over the old ones, then the routes nobody wants are removed.
-    // Traffic of a target keeps its route the whole time.
-    $replace = [];
-    foreach ($want as $lines) {
-        foreach ($lines as $line) $replace[] = $line;
+    // What the tables hold now: destination => gateway and interface as ip prints them (reading needs no root)
+    $have = [];
+    foreach ($policies as $policy) {
+        foreach ([$policy['our_table'], listTable($policy['our_table'])] as $table) {
+            $have[$table] = [];
+            foreach (explode("\n", execReadOnly(['/opt/sbin/ip', 'route', 'show', 'table', (string)$table])) as $row) {
+                $parts = preg_split('/\s+/', trim($row));
+                // an unreachable/blackhole route under one of our destinations is never right: it gets replaced
+                $odd = in_array($parts[0], ['unreachable', 'blackhole', 'prohibit', 'throw'], true) ? $parts[0] : '';
+                if ($odd !== '') array_shift($parts);
+                $dest = $parts[0];
+                // "default" is how ip prints 0.0.0.0/0: a target can never want it, so it always goes
+                if ($dest !== 'default' && !preg_match('~^\d+\.\d+\.\d+\.\d+(/\d+)?$~', $dest)) continue;
+                $via = '';
+                $dev = '';
+                for ($i = 1; $i + 1 < count($parts); $i++) {
+                    if ($parts[$i] === 'via') $via = $parts[$i + 1];
+                    if ($parts[$i] === 'dev') $dev = $parts[$i + 1];
+                }
+                $have[$table][$dest] = ['via' => $via, 'dev' => $dev, 'odd' => $odd];
+            }
+        }
     }
-    $route_errors = 0;
-    $route_error = '';
-    if ($replace) {
-        $out = (string)ipRouteBatch($replace);
-        $route_errors = preg_match_all('/^Command failed/m', $out);
-        if (preg_match('/^(?!Command failed).*\S.*$/m', $out, $m)) $route_error = trim($m[0]);
+
+    // A route is written only when it is missing or points elsewhere; a route given only a gateway
+    // gets its interface from the kernel, so then only the gateway is compared.
+    $tableInfo = [];
+    foreach ($policies as $policy) {
+        $tableInfo[$policy['our_table']] = ['policy' => $policy['name'], 'kind' => 'targets'];
+        $tableInfo[listTable($policy['our_table'])] = ['policy' => $policy['name'], 'kind' => 'lists'];
+    }
+    $describe = fn($via, $dev) => trim(($via !== '' ? 'via ' . $via . ' ' : '') . ($dev !== '' ? 'dev ' . $dev : ''));
+    $replace = [];
+    $drift = [];
+    $counts = ['added' => 0, 'changed' => 0, 'removed' => 0, 'unchanged' => 0, 'rules_missing' => 0, 'rules_extra' => 0];
+    foreach ($want as $table => $routes) {
+        foreach ($routes as $dest => $route) {
+            $now = $have[$table][$dest] ?? null;
+            if ($now === null) {
+                $counts['added']++;
+                $drift[] = ['kind' => 'missing', 'table' => $table, 'dest' => $dest, 'want' => $describe($route['via'], $route['dev']), 'have' => '', 'who' => $route['who']];
+            } elseif ($now['odd'] !== '' || $now['via'] !== $route['via'] || ($route['dev'] !== '' && $now['dev'] !== $route['dev'])) {
+                $counts['changed']++;
+                $drift[] = ['kind' => 'wrong', 'table' => $table, 'dest' => $dest, 'want' => $describe($route['via'], $route['dev']), 'have' => trim($now['odd'] . ' ' . $describe($now['via'], $now['dev'])), 'who' => $route['who']];
+            } else {
+                $counts['unchanged']++;
+                continue;
+            }
+            $replace[] = $route['line'];
+        }
     }
 
     // Rules: a rule that is already right stays untouched (no del+add gap), stale prefs go, missing rules are added.
@@ -807,53 +851,109 @@ function doApplyRoutes(SQLite3 $db) {
         $markBare = ltrim(strtolower(substr($mark, 2)), '0');
         $tables = [$policy['our_table'] => $prefs['targets'], listTable($policy['our_table']) => $prefs['lists']];
         foreach ($tables as $table => $pref) {
-            $current = execReadOnly(['/opt/sbin/ip', 'route', 'show', 'table', (string)$table]);
-            foreach (explode("\n", $current) as $row) {
-                $parts = preg_split('/\s+/', trim($row));
-                if (in_array($parts[0], ['unreachable', 'blackhole', 'prohibit', 'throw'], true)) array_shift($parts);
-                $dest = $parts[0];
-                // "default" is how ip prints 0.0.0.0/0: a target can never want it, so it always goes
-                if ($dest !== 'default' && !preg_match('~^\d+\.\d+\.\d+\.\d+(/\d+)?$~', $dest)) continue;
+            foreach ($have[$table] as $dest => $now) {
                 if (isset($want[$table][$dest])) continue;
                 $cleanup[] = 'route del ' . $dest . ' table ' . $table;
+                $counts['removed']++;
+                $drift[] = ['kind' => 'extra', 'table' => $table, 'dest' => $dest, 'want' => '', 'have' => trim($now['odd'] . ' ' . $describe($now['via'], $now['dev'])), 'who' => ''];
             }
             $wanted = isset($want[$table]) ? $pref : 0;
             $present = false;
             foreach ($rulesNow as $rule) {
                 if ($rule['mark'] !== $markBare || $rule['table'] !== (int)$table || !in_array($rule['pref'], $ours, true)) continue;
-                if ($rule['pref'] === $wanted && !$present) $present = true;
-                else $cleanup[] = "rule del fwmark $mark table $table pref {$rule['pref']}";
+                if ($rule['pref'] === $wanted && !$present) {
+                    $present = true;
+                    continue;
+                }
+                $cleanup[] = "rule del fwmark $mark table $table pref {$rule['pref']}";
+                $counts['rules_extra']++;
+                $drift[] = ['kind' => 'rule_extra', 'table' => $table, 'dest' => "fwmark $mark pref {$rule['pref']}", 'want' => '', 'have' => '', 'who' => ''];
             }
-            if ($wanted && !$present) $cleanup[] = "rule add fwmark $mark table $table pref $wanted";
+            if ($wanted && !$present) {
+                $cleanup[] = "rule add fwmark $mark table $table pref $wanted";
+                $counts['rules_missing']++;
+                $drift[] = ['kind' => 'rule_missing', 'table' => $table, 'dest' => "fwmark $mark pref $wanted", 'want' => '', 'have' => '', 'who' => ''];
+            }
         }
     }
+
+    $total = 0;
+    foreach ($want as $routes) $total += count($routes);
+    return [
+        'prefs'    => $prefs,
+        'replace'  => $replace,
+        'cleanup'  => $cleanup,
+        'drift'    => $drift,
+        'tables'   => $tableInfo,
+        'counts'   => $counts,
+        'routes'   => $total,
+        'domains'  => $domainCount,
+        'lists'    => $listCount,
+        'policies' => count($policy_seen),
+    ];
+}
+
+// Brings every policy table to what the targets and lists want: only the difference found by routePlan() is written.
+// When nothing differs there is no write and no root call at all. The tables are never emptied,
+// so traffic of a target keeps its route the whole time.
+function doApplyRoutes(SQLite3 $db) {
+    $plan = routePlan($db);
+    if (isset($plan['error'])) return ['success' => false, 'error' => $plan['error']];
+
+    $route_errors = 0;
+    $route_error = '';
+    if ($plan['replace']) {
+        $out = (string)ipRouteBatch($plan['replace']);
+        $route_errors = preg_match_all('/^Command failed/m', $out);
+        if (preg_match('/^(?!Command failed).*\S.*$/m', $out, $m)) $route_error = trim($m[0]);
+    }
+
     // Every line of the cleanup must work: a failed rule add means the routes are there but nothing sends traffic to them
     $rule_error = '';
-    if ($cleanup) {
-        $out = (string)ipRouteBatch($cleanup);
+    if ($plan['cleanup']) {
+        $out = (string)ipRouteBatch($plan['cleanup']);
         $why = '';
         foreach (explode("\n", $out) as $row) {
             if (!preg_match('/^Command failed .*:(\d+)\s*$/', $row, $m)) {
                 if (trim($row) !== '') $why = trim($row);
                 continue;
             }
-            $command = $cleanup[(int)$m[1] - 1] ?? '';
+            $command = $plan['cleanup'][(int)$m[1] - 1] ?? '';
             if ($rule_error === '' || str_starts_with($command, 'rule add')) $rule_error = $command . ': ' . $why;
         }
     }
-    setSetting($db, 'pref_applied', $prefs['targets'] . ' ' . $prefs['lists']);
+    setSetting($db, 'pref_applied', $plan['prefs']['targets'] . ' ' . $plan['prefs']['lists']);
 
-    $total_routes = 0;
-    foreach ($want as $lines) $total_routes += count($lines);
     return [
         'success'  => true,
-        'routes'   => $total_routes,
-        'domains'  => count($domains),
-        'lists'    => count($lists),
+        'routes'   => $plan['routes'],
+        'domains'  => $plan['domains'],
+        'lists'    => $plan['lists'],
         'route_errors' => $route_errors,
         'route_error'  => $route_error,
         'rule_error'   => $rule_error,
-        'policies' => count($policy_seen),
+        'added'        => $plan['counts']['added'],
+        'changed'      => $plan['counts']['changed'],
+        'removed'      => $plan['counts']['removed'],
+        'unchanged'    => $plan['counts']['unchanged'],
+        'policies' => $plan['policies'],
+    ];
+}
+
+// Diagnostics: where the kernel tables differ from the database. Nothing is written.
+function doGetRouteDrift(SQLite3 $db) {
+    $plan = routePlan($db);
+    if (isset($plan['error'])) return ['success' => false, 'error' => $plan['error']];
+    $c = $plan['counts'];
+    return [
+        'success' => true,
+        'routes'  => $plan['routes'],
+        'counts'  => $c,
+        'total'   => $c['added'] + $c['changed'] + $c['removed'] + $c['rules_missing'] + $c['rules_extra'],
+        // the first 300 are enough to see what is wrong; a list never applied would give thousands
+        'drift'   => array_slice($plan['drift'], 0, 300),
+        'tables'  => $plan['tables'],
+        'checked' => time(),
     ];
 }
 
@@ -1593,6 +1693,7 @@ function coreHandlers() {
             SELECT d.id, d.domain, d.policy_id, p.name AS policy_name, p.description, d.interface, d.gateway,
                    d.current_ip, d.previous_ip, d.ip_sources, d.dns_skip, d.last_check, d.enabled, d.created_at, d.updated_at
             FROM domains d LEFT JOIN policies p ON d.policy_id = p.id ORDER BY d.domain')),
+        'getRouteDrift' => fn() => withDb('doGetRouteDrift'),
         'getPolicies'  => fn() => withDb(fn($db) => rows($db, "
             SELECT id, name, description, mark_hex, keenetic_table, our_table, created_at, updated_at
             FROM policies ORDER BY CASE WHEN name = 'DELETED' THEN 999 ELSE 0 END, name")),
@@ -1835,7 +1936,7 @@ function runCli(array $argv) {
     switch ($cmd) {
         case 'apply':
             $r = locked(fn() => doApplyRoutes($db), true);
-            echo $r === null ? "Busy, queued\n" : ($r['success'] ? "{$r['routes']} routes applied\n" : "{$r['error']}\n");
+            echo $r === null ? "Busy, queued\n" : ($r['success'] ? "{$r['routes']} routes in the tables: +{$r['added']} ~{$r['changed']} -{$r['removed']}, {$r['unchanged']} untouched\n" : "{$r['error']}\n");
             break;
         case 'event':
         case 'update':

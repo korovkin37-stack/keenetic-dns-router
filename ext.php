@@ -2513,7 +2513,8 @@ function jobRun(SQLite3 $db, $kind, array $ids) {
         return;
     }
     if (birdReassert($db)) jobLog('bgp: the rule and the neighbor routes are in place');
-    jobLog('routes: ' . $applied['routes'] . ' written' . ($applied['route_errors'] ? ', ' . $applied['route_errors'] . ' rejected: ' . $applied['route_error'] : ''));
+    jobLog('routes: ' . $applied['routes'] . ' in the tables, +' . $applied['added'] . ' new, ~' . $applied['changed'] . ' changed, -' . $applied['removed'] . ' removed, ' . $applied['unchanged'] . ' untouched'
+        . ($applied['route_errors'] ? '; ' . $applied['route_errors'] . ' rejected: ' . $applied['route_error'] : ''));
     if ($applied['rule_error'] !== '') jobLog('rules: FAILED ' . $applied['rule_error']);
     jobSet(['state' => 'done', 'finished' => time(), 'routes' => $applied['routes'], 'route_errors' => $applied['route_errors'], 'route_error' => $applied['route_error'], 'rule_error' => $applied['rule_error']]);
     jobLog('finished');

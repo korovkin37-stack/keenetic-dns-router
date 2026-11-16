@@ -2,6 +2,13 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.41.0
+- Tables and database: a new "Routes" item in the status panel compares the routing tables of the router with the targets and lists in the database and shows the result (in sync / number of differences). A click opens the details per policy and table: routes missing in the router, routes pointing to another interface or gateway, routes and ip rules the database does not have. It only reads; "Apply routes" in the same window fixes everything. The check runs at start, after every task and on request.
+- The check and the apply share one plan, so what the check shows is exactly what applying will do.
+
+## 5.40.2
+- Applying compares the tables with what they must hold and writes only the difference: missing routes and routes with another gateway or interface. When nothing changed, nothing is written and no root call is made, so hooks firing often cost nothing and the router does not stutter. The task log shows how many routes were added, changed, removed and left untouched.
+
 ## 5.40.1
 Fixes after review of 5.40.0.
 - ip rules that are already right stay untouched; a rule that the router refused to add is reported in the task and in the list window instead of a silent "routes applied".

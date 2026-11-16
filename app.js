@@ -1,7 +1,7 @@
 // app.js - клиентская логика
 
 const API = '/app.php';
-const JS_VERSION = '5.40.1'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.41.0'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -2155,6 +2155,7 @@ async function pollJob() {
     }
     loadJobHistory();
     loadData();
+    checkRouteDrift();
     if (document.getElementById('listsTab').classList.contains('active')) loadLists();
     if (job && !jobModalOpen()) showToast(job.state === 'done' ? t('Update finished: {0} routes written', job.routes) : t('Update stopped: open the log'), job.state === 'done' ? 'success' : 'warning', 6000);
 }
@@ -4077,6 +4078,8 @@ async function loadDashboard() {
         btn.disabled = false;
     }
 
+    checkRouteDrift();
+
     const birdChip = document.getElementById('dashBirdChip');
     try {
         const bird = await (await apiFetch(API + '?action=getBirdStatus')).json();
@@ -4088,6 +4091,88 @@ async function loadDashboard() {
         birdChip.hidden = true;
     }
 }
+
+// Tables and database: what the kernel holds against what the targets and lists say. Only reads; applying is the usual task.
+let driftData = null;
+async function checkRouteDrift() {
+    const value = document.getElementById('dashDrift');
+    try {
+        driftData = await (await apiFetch(API + '?action=getRouteDrift')).json();
+    } catch (error) {
+        driftData = { success: false, error: error.message };
+    }
+    if (!driftData.success) {
+        value.textContent = '—';
+        value.className = 'dash-chip-value';
+    } else {
+        value.textContent = driftData.total ? t('{0} differ', driftData.total) : t('in sync');
+        value.className = 'dash-chip-value ' + (driftData.total ? 'warn' : 'ok');
+    }
+    if (document.getElementById('driftModal').style.display === 'block') renderDrift();
+}
+
+const DRIFT_KINDS = {
+    missing:      ['bad',  'Not in the router'],
+    wrong:        ['bad',  'Points elsewhere'],
+    extra:        ['warn', 'Not in the database'],
+    rule_missing: ['bad',  'ip rule is missing'],
+    rule_extra:   ['warn', 'Stale ip rule'],
+};
+
+function renderDrift() {
+    const summary = document.getElementById('driftSummary');
+    const list = document.getElementById('driftList');
+    const r = driftData;
+    if (!r) {
+        summary.textContent = t('Checking…');
+        list.innerHTML = '';
+        return;
+    }
+    if (!r.success) {
+        summary.textContent = t(r.error || 'Check failed');
+        list.innerHTML = '';
+        return;
+    }
+    if (!r.total) {
+        summary.textContent = t('The tables match the database: {0} routes checked.', r.routes);
+        list.innerHTML = '';
+        return;
+    }
+    let text = t('{0} differences. The routes are not written yet: "Apply routes" brings the tables to the database.', r.total);
+    if (r.drift.length < r.total) text += ' ' + t('The first {0} are shown.', r.drift.length);
+    summary.textContent = text;
+
+    const byTable = {};
+    for (const d of r.drift) (byTable[d.table] = byTable[d.table] || []).push(d);
+    let html = '';
+    for (const [table, rows] of Object.entries(byTable)) {
+        const info = r.tables[table] || { policy: '?', kind: 'targets' };
+        html += `<div class="drift-table"><h3><span data-notr>${escapeHtml(info.policy)}</span> · ${escapeHtml(t(info.kind === 'lists' ? 'lists' : 'targets'))} (${escapeHtml(t('table {0}', table))})</h3>`;
+        for (const d of rows) {
+            const [cls, label] = DRIFT_KINDS[d.kind];
+            let what = `<code data-notr>${escapeHtml(d.dest)}</code>`;
+            if (d.kind === 'missing') what += ` → <code data-notr>${escapeHtml(d.want)}</code>`;
+            if (d.kind === 'wrong') what += `: ${escapeHtml(t('in the router'))} <code data-notr>${escapeHtml(d.have)}</code>, ${escapeHtml(t('must be'))} <code data-notr>${escapeHtml(d.want)}</code>`;
+            if (d.kind === 'extra') what += ` <code data-notr>${escapeHtml(d.have)}</code>`;
+            const who = d.who ? ` <span class="drift-who" data-notr>${escapeHtml(d.who)}</span>` : '';
+            html += `<div class="res-row res-${cls}"><i></i><span>${escapeHtml(t(label))}: ${what}${who}</span></div>`;
+        }
+        html += '</div>';
+    }
+    list.innerHTML = html;
+}
+
+document.getElementById('dashDriftChip').addEventListener('click', () => {
+    renderDrift();
+    document.getElementById('driftModal').style.display = 'block';
+    checkRouteDrift();
+});
+document.getElementById('driftClose').addEventListener('click', () => { document.getElementById('driftModal').style.display = 'none'; });
+document.getElementById('driftRecheck').addEventListener('click', checkRouteDrift);
+document.getElementById('driftApply').addEventListener('click', () => {
+    document.getElementById('driftModal').style.display = 'none';
+    startJob('apply');
+});
 
 // Counters next to the menu items: targets and policies come from the loaded lists.
 function updateNavCounts() {
