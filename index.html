@@ -77,7 +77,7 @@
                 <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h10a4 4 0 0 1 0 8H8"></path><path d="M7 5L4 8l3 3"></path></svg></span>
                 <div class="brand-text">
                     <h1>Keenetic DNS Router</h1>
-                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.45.1</button>
+                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.45.2</button>
                 </div>
             </div>
             <nav class="tabs" id="mainNav" aria-label="Sections">
@@ -412,6 +412,11 @@
                     <button class="btn btn-small" id="testDnsBtn">Check</button>
                     <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Resolves a domain through every server in use and shows who answers and how fast. Works with the list above even before saving.">i</span>
                 </div>
+                <div class="dns-row dns-route">
+                    <label class="check-row"><input type="checkbox" id="dnsRouteOn"> <span>Send these servers through the interface</span></label>
+                    <select id="dnsRouteIface" data-empty="Choose an interface"></select>
+                    <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="A route to every server above through the chosen interface, like the route to the BGP neighbor: the panel's lookups then go through the tunnel. The route is in the main table, so devices of the network that ask these servers directly go the same way. Local and private addresses are never routed away. The routes come back after the interface reconnects.">i</span>
+                </div>
                 <div class="dns-results" id="dnsResult"></div>
                 <p class="card-note" id="dnsNoNslookup" hidden>nslookup not found: the system resolver is used.</p>
             </div>
@@ -419,7 +424,7 @@
             <div class="tools-section panel-card">
                 <div class="card-head"><h3>Panel</h3></div>
                 <div class="set-row">
-                    <span class="look-label">Downloads through the interface <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Lists are downloaded with curl. Here you can pick the interface it goes out through, for example a tunnel. Only the panel's downloads are affected, other traffic of the router is not. Empty: the router's normal routing.">i</span></span>
+                    <span class="look-label">Downloads through the interface <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Every download of the panel goes through curl and this interface: the lists and the catalog of iplist, own lists by a link, the update check and the update from GitHub. The DPI check and the curl of Test route choose their interfaces themselves. Other traffic of the router is not affected. Empty: the router's normal routing.">i</span></span>
                     <span class="set-ctl"><span class="set-saved" id="panelNetSaved">Saved</span><select id="panelNetInterface"></select></span>
                 </div>
                 <div class="set-row">
@@ -1213,14 +1218,14 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
                     </div>
                 </div>
                 <div class="form-group" id="customListTextBox">
-                    <textarea id="customListText" rows="9" spellcheck="false" placeholder="example.com&#10;*.cdn.example.com&#10;203.0.113.0/24&#10;198.51.100.7&#10;# comments, hosts files and adblock lines are understood too"></textarea>
+                    <textarea id="customListText" rows="9" spellcheck="false" ></textarea>
                 </div>
                 <div class="form-group" id="customListUrlBox" hidden>
                     <input type="text" id="customListUrl" placeholder="https://example.com/list.txt" autocomplete="off" spellcheck="false">
                     <p class="card-note">Downloaded again on every update of the lists, through the interface set for downloads.</p>
                 </div>
                 <div class="if-control-row">
-                    <span class="muted card-note">One entry per line: a domain, an IP or a network, recognized by itself.</span>
+                    <span class="muted card-note">One entry per line: a domain, an IP or a network, recognized by itself. "*.example.com" counts as example.com: subdomains are not found by themselves, list the ones you need.</span>
                     <button type="button" class="btn btn-small" id="customListPreview">Check</button>
                 </div>
                 <div id="customListResult" class="res-box" hidden></div>

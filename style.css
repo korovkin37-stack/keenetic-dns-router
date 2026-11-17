@@ -3403,3 +3403,6 @@ body.has-bulk #domainsTab { padding-bottom: 80px; }
 .pc-failover .warn, .pc-failover b.warn { color: var(--led-amber, #e0a030); }
 .policy-desc-inline { color: var(--muted); font-weight: 400; }
 .policy-desc-inline::before { content: '· '; }
+.dns-route { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dns-route .check-row { margin: 0; }
+.dns-route select { min-width: 220px; }

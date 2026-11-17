@@ -2,6 +2,11 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.45.2
+- Own lists: the example in the text field no longer suggests that `*.example.com` catches subdomains; the hint says it counts as example.com.
+- The hint of "Downloads through the interface" lists everything that goes through it: iplist lists and catalog, own lists by a link, the GitHub update.
+- DNS for domain lookups: "Send these servers through the interface" puts a route to every chosen server through a tunnel, like the route to the BGP neighbor, so the panel's lookups go through it. Local and private addresses are never routed away; the routes come back after the interface reconnects.
+
 ## 5.45.1
 - Connectivity check in the interface window: the Keenetic ping-check of the interface (hosts, interval, failures in a row) with its live state. Two modes: "Only watch" (ignore-fail: the interface stays on, the panel reads the result; groundwork for the backup exit) and "Turn the interface off" (Keenetic turns it off itself). The panel keeps its own profile `dnsr-<interface>` and only shows profiles made in the Keenetic web interface.
 - The connectivity check has all the modes of Keenetic: ICMP, TCP port, TLS on a TCP port, automatic (with the port for the TCP ones).

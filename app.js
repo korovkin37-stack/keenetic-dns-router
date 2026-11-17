@@ -1,7 +1,7 @@
 // app.js - клиентская логика
 
 const API = '/app.php';
-const JS_VERSION = '5.45.1'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.45.2'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -4464,7 +4464,7 @@ let interfacesData = [];
 let interfaceChoices = [];
 const TUNNEL_TYPES = ['Wireguard', 'OpenVPN', 'IPsec', 'L2TP', 'PPTP', 'SSTP', 'Gre', 'Ipip', 'Eoip'];
 const HIDDEN_TYPES = ['Port', 'WifiMaster', 'AccessPoint', 'WifiStation', 'Bridge'];
-const INTERFACE_SELECTS = ['domainBackupInterface', 'listBackupInterface', 'bulkBackupInterface', 'customListInterface', 'bulkInterface', 'domainInterface', 'catalogInterface', 'listInterface', 'panelNetInterface', 'dpiIsp', 'dpiTun'];
+const INTERFACE_SELECTS = ['dnsRouteIface', 'domainBackupInterface', 'listBackupInterface', 'bulkBackupInterface', 'customListInterface', 'bulkInterface', 'domainInterface', 'catalogInterface', 'listInterface', 'panelNetInterface', 'dpiIsp', 'dpiTun'];
 
 // Fills an interface drop-down with the router's interfaces (system names such as nwg0, eth3) and picks the value
 function fillInterfaceSelect(id, value) {
@@ -4976,7 +4976,10 @@ let dnsPicked = [];
 let dnsMode = 'first';
 let dnsSaved = '';
 
-function dnsSnapshot() { return dnsPicked.join(' ') + '|' + dnsMode; }
+function dnsSnapshot() { return dnsPicked.join(' ') + '|' + dnsMode + '|' + dnsRouteValue(); }
+function dnsRouteValue() {
+    return document.getElementById('dnsRouteOn').checked ? document.getElementById('dnsRouteIface').value : '';
+}
 
 let routerDns = [];
 
@@ -5041,6 +5044,9 @@ async function loadDnsResolver() {
     dnsPicked = (r.servers || '').split(/\s+/).filter(Boolean);
     document.getElementById('dnsNoNslookup').hidden = r.nslookup !== false;
     dnsMode = r.mode === 'all' ? 'all' : 'first';
+    document.getElementById('dnsRouteOn').checked = !!r.route_iface;
+    fillInterfaceSelect('dnsRouteIface', r.route_iface || '');
+    document.getElementById('dnsRouteIface').disabled = !r.route_iface;
     dnsSaved = dnsSnapshot();
     renderDnsPicker();
     await loadRouterDns();
@@ -5048,12 +5054,17 @@ async function loadDnsResolver() {
 }
 
 async function saveDnsResolver() {
-    const r = await api({ action: 'saveDnsResolver', servers: dnsPicked.join(' '), mode: dnsMode });
+    if (document.getElementById('dnsRouteOn').checked && !document.getElementById('dnsRouteIface').value) {
+        showToast(t('Choose the interface for the DNS servers'), 'error');
+        return;
+    }
+    const r = await api({ action: 'saveDnsResolver', servers: dnsPicked.join(' '), mode: dnsMode, route_iface: dnsRouteValue() });
     if (r.success) {
         dnsSaved = dnsSnapshot();
         renderDnsPicker();
         dnsGlobalLoaded = false;
         showToast(r.servers ? 'DNS saved: domains are resolved through these servers' : 'DNS reset: the system resolver is used', 'success');
+        if (r.route_error) showToast(t('The routes of the DNS servers: {0}', r.route_error), 'error', 9000);
     } else {
         showToast(r.error || 'Failed to save', 'error', 8000);
     }
@@ -5121,6 +5132,11 @@ document.getElementById('dnsMode').addEventListener('click', (e) => {
     renderDnsPicker();
 });
 document.getElementById('saveDnsBtn').addEventListener('click', saveDnsResolver);
+document.getElementById('dnsRouteOn').addEventListener('change', (e) => {
+    document.getElementById('dnsRouteIface').disabled = !e.target.checked;
+    renderDnsPicker();
+});
+document.getElementById('dnsRouteIface').addEventListener('change', renderDnsPicker);
 
 async function loadPanelNet() {
     const r = await (await apiFetch(API + '?action=getPanelNet')).json();
@@ -5748,6 +5764,7 @@ function openCustomList(list) {
     document.getElementById('customListTitle').textContent = t(list ? 'Own list' : 'New own list');
     document.getElementById('customListName').value = list ? list.site : '';
     document.getElementById('customListText').value = list ? list.custom_text : '';
+    document.getElementById('customListText').placeholder = t('example.com\nwww.example.com\n203.0.113.0/24\n198.51.100.7\n# comments, hosts files and adblock lines are understood too');
     document.getElementById('customListUrl').value = list ? list.custom_url : '';
     setCustomListSource(list && list.custom_url ? 'url' : 'text');
     const policyId = list ? list.policy_id : (state.policies.find(p => p.name !== 'DELETED') || {}).id;

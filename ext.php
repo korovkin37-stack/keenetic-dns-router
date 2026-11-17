@@ -1046,7 +1046,37 @@ function birdDetectTable() {
 }
 
 function doGetDnsResolver(SQLite3 $db) {
-    return ['servers' => (string)getSetting($db, 'dns_servers'), 'mode' => getSetting($db, 'dns_mode') === 'all' ? 'all' : 'first', 'nslookup' => hasNslookup()];
+    return ['servers' => (string)getSetting($db, 'dns_servers'), 'mode' => getSetting($db, 'dns_mode') === 'all' ? 'all' : 'first', 'nslookup' => hasNslookup(),
+        'route_iface' => (string)getSetting($db, 'dns_route_iface')];
+}
+
+// The DNS servers of the panel through a chosen interface: a host route per server in the main table,
+// the way the BGP hook routes the bird neighbor. The router's own lookups go by the main table, Keenetic policies
+// do not apply to them. Private and local addresses are never routed away.
+function dnsRoutesSync(SQLite3 $db) {
+    $iface = (string)getSetting($db, 'dns_route_iface');
+    $want = [];
+    if ($iface !== '') {
+        foreach (dnsServerList((string)getSetting($db, 'dns_servers')) as $ip) {
+            if (isValidIPv4($ip) && listsEntryReject($ip) === '') $want[] = $ip;
+        }
+    }
+    [$oldIface, $oldList] = array_pad(explode('|', (string)getSetting($db, 'dns_routes_applied'), 2), 2, '');
+    $old = array_filter(explode(' ', $oldList));
+    $lines = [];
+    foreach ($old as $ip) {
+        if ($oldIface !== $iface || !in_array($ip, $want, true)) $lines[] = "route del $ip/32 dev $oldIface table main";
+    }
+    foreach ($want as $ip) $lines[] = "route replace $ip/32 dev $iface table main";
+    if (!$lines) return ['routes' => 0, 'error' => ''];
+    $out = (string)ipRouteBatch($lines);
+    $error = '';
+    // a stale route that is already gone is not an error
+    foreach (explode("\n", $out) as $row) {
+        if (trim($row) !== '' && !preg_match('/^Command failed|No such process/', $row)) $error = trim($row);
+    }
+    setSetting($db, 'dns_routes_applied', $want ? $iface . '|' . implode(' ', $want) : null);
+    return ['routes' => count($want), 'error' => $error];
 }
 
 function doSaveDnsResolver(SQLite3 $db, $in) {
@@ -1055,9 +1085,14 @@ function doSaveDnsResolver(SQLite3 $db, $in) {
     foreach ($list as $ip) {
         if (!isValidIPv4($ip)) fail("Not an IPv4 address: $ip");
     }
+    $routeIface = trim((string)($in['route_iface'] ?? ''));
+    if (!isValidInterface($routeIface)) fail('Invalid interface name');
+    if ($routeIface !== '' && !is_dir('/sys/class/net/' . $routeIface)) fail('No such interface on the router');
     setSetting($db, 'dns_servers', $list ? implode(' ', $list) : null);
     setSetting($db, 'dns_mode', ($in['mode'] ?? '') === 'all' ? 'all' : null);
-    return ['success' => true, 'servers' => implode(' ', $list)];
+    setSetting($db, 'dns_route_iface', $routeIface === '' ? null : $routeIface);
+    $routes = dnsRoutesSync($db);
+    return ['success' => true, 'servers' => implode(' ', $list), 'routes' => $routes['routes'], 'route_error' => $routes['error']];
 }
 
 function doGetPanelNet(SQLite3 $db) {
@@ -2685,6 +2720,8 @@ function jobRun(SQLite3 $db, $kind, array $ids) {
         return;
     }
     if (birdReassert($db)) jobLog('bgp: the rule and the neighbor routes are in place');
+    $dnsRoutes = dnsRoutesSync($db);
+    if ($dnsRoutes['routes']) jobLog('dns: ' . $dnsRoutes['routes'] . ' DNS servers routed through ' . getSetting($db, 'dns_route_iface') . ($dnsRoutes['error'] !== '' ? ': ' . $dnsRoutes['error'] : ''));
     jobLog('routes: ' . $applied['routes'] . ' in the tables, +' . $applied['added'] . ' new, ~' . $applied['changed'] . ' changed, -' . $applied['removed'] . ' removed, ' . $applied['unchanged'] . ' untouched'
         . ($applied['route_errors'] ? '; ' . $applied['route_errors'] . ' rejected: ' . $applied['route_error'] : ''));
     if ($applied['rule_error'] !== '') jobLog('rules: FAILED ' . $applied['rule_error']);
