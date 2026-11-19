@@ -2,6 +2,9 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.45.3
+- Fix bugs.
+
 ## 5.45.2
 - Own lists: the example in the text field no longer suggests that `*.example.com` catches subdomains; the hint says it counts as example.com.
 - The hint of "Downloads through the interface" lists everything that goes through it: iplist lists and catalog, own lists by a link, the GitHub update.

@@ -3,6 +3,17 @@ defined("APP_VERSION") || exit;
 // Optional tabs: routing tables, Test Route, DNS info, clients, interfaces, dashboard, bird4.
 // Loaded by app.php only when one of these actions is requested.
 
+function listsTempDir() {
+    static $dir = null;
+    if ($dir !== null) return $dir;
+    if (is_dir('/opt/tmp') && is_writable('/opt/tmp')) {
+        $dir = '/opt/tmp';
+    } else {
+        $dir = sys_get_temp_dir();
+    }
+    return $dir;
+}
+
 function toNumber($v) {
     return is_numeric($v) ? $v + 0 : 0;
 }
@@ -1345,11 +1356,11 @@ function fileVersion($path) {
 
 function updateStageDir($token) {
     if (!preg_match('/^[a-f0-9]{16}$/', (string)$token)) fail('Bad update token');
-    return sys_get_temp_dir() . '/dnsr_update_' . $token;
+    return listsTempDir() . '/dnsr_update_' . $token;
 }
 
 function updateRemoveStage($dir) {
-    if (strpos($dir, sys_get_temp_dir() . '/dnsr_update_') !== 0) return;
+    if (strpos($dir, listsTempDir() . '/dnsr_update_') !== 0) return;
     foreach (glob($dir . '/*') ?: [] as $f) @unlink($f);
     @rmdir($dir);
 }
@@ -1463,7 +1474,7 @@ function doCheckGithubUpdate($in) {
     $lang = preg_match('/^[a-z]{2,3}$/', (string)($in['lang'] ?? '')) ? (string)$in['lang'] : 'en';
     if ($cache && empty($in['force']) && $cache['checked'] > time() - 6 * 3600 && $cache['current'] === APP_VERSION && $cache['lang'] === $lang) return $cache;
 
-    $tmp = tempnam(sys_get_temp_dir(), 'krgh_');
+    $tmp = tempnam(listsTempDir(), 'krgh_');
     $error = listsDownload('https://api.github.com/repos/' . GITHUB_REPO . '/releases/latest', $tmp);
     $release = json_decode((string)file_get_contents($tmp), true);
     @unlink($tmp);
@@ -1514,7 +1525,7 @@ function doGithubDownloadUpdate() {
     if (!$check['newer']) return ['success' => false, 'error' => 'The release on GitHub is not newer than this version'];
     if ($check['asset'] === '') return ['success' => false, 'error' => 'The release has no dns-router.tar.gz'];
     if ($check['digest'] === '') return ['success' => false, 'error' => 'GitHub gave no checksum for the archive'];
-    $tmp = tempnam(sys_get_temp_dir(), 'krgh_');
+    $tmp = tempnam(listsTempDir(), 'krgh_');
     $error = listsDownload($check['asset'], $tmp);
     $raw = (string)file_get_contents($tmp);
     @unlink($tmp);
@@ -1619,11 +1630,12 @@ function listsDownload($url, $file) {
     if ($curl === '') return 'curl is not installed: Service, System checks, "curl"';
     $iface = (string)getSetting(getDb(), 'curl_interface');
     $bind = $iface === '' ? '' : ' --interface ' . escapeshellarg($iface);
-    // http(s) only, redirects only to https, at most 20 MB: /tmp on the router is RAM
-    $limits = ' --proto =http,https --proto-redir =https --max-filesize 20M';
+    $maxFilesize = "100M";
+    // http(s) only, redirects only to https, at most 100 MB: /tmp on the router is RAM
+    $limits = ' --proto =http,https --proto-redir =https --max-filesize '.$maxFilesize;
     exec(escapeshellarg($curl) . $bind . $limits . ' -fsSL --connect-timeout 10 -m 60 -o ' . escapeshellarg($file) . ' ' . escapeshellarg($url) . ' 2>&1', $out, $code);
-    if ($code === 63) return 'Download failed: the file is larger than 20 MB';
-    if ($code !== 0) return 'Download failed: ' . trim(implode(' ', $out));
+    if ($code === 63) return 'Download failed: the file is larger than '.$maxFilesize;
+    if ($code !== 0) return 'Download failed: 123' . trim(implode(' ', $out));
     return '';
 }
 
@@ -1634,7 +1646,7 @@ function listsDataUrl($sourceUrl, $site, $data) {
 
 function listsFetchLines($sourceUrl, $site, $data, &$error) {
     $url = listsDataUrl($sourceUrl, $site, $data);
-    $tmp = tempnam(sys_get_temp_dir(), 'krlist_');
+    $tmp = tempnam(listsTempDir(), 'krlist_');
     $error = listsDownload($url, $tmp);
     $lines = [];
     $fh = $error === '' ? fopen($tmp, 'r') : false;
@@ -1791,7 +1803,7 @@ function startBackground($arguments, $then = '') {
     // The log is named after the uid of the process that starts it ($(id -u), not getmyuid(), which is the owner of app.php):
     // a file left by root cannot be opened by the web user, and then the shell would not start the command at all.
     // setsid takes the process out of php-fpm's process group, so a restart of php-fpm does not kill it.
-    $log = '/tmp/dns-router-lists-$(id -u).log';
+    $log = '/opt/tmp/dns-router-lists-$(id -u).log';
     $detach = trim((string)shell_exec('command -v setsid 2>/dev/null')) !== '' ? 'setsid ' : '';
     exec('(' . $detach . $cmd . ' </dev/null >' . $log . ' 2>&1 & echo $!)', $out);
     return (int)($out[0] ?? 0);
@@ -2100,11 +2112,13 @@ function doGetListDetail(SQLite3 $db, $id) {
 
 // The catalog is the source's full JSON: only "name" and "group" of every site are cut out of it, chunk by chunk.
 function doGetListsCatalog(SQLite3 $db, $refresh, $sourceName = '') {
+    ini_set('memory_limit', '128M');
+    set_time_limit(300); // 5 минут на выполнение
     $cacheKey = 'lists_catalog_' . preg_replace('/\W/', '_', $sourceName);
     $cached = getSetting($db, $cacheKey);
     if ($cached && !$refresh) return ['sites' => json_decode($cached, true), 'cached' => true];
 
-    $tmp = tempnam(sys_get_temp_dir(), 'krcat_');
+    $tmp = tempnam(listsTempDir(), 'krcat_');
     $error = listsDownload(listsSourceUrl($db, $sourceName) . '/?format=json', $tmp);
     if ($error !== '') {
         @unlink($tmp);
@@ -2184,7 +2198,7 @@ function textCut($s, $width) {
 // The text of an own list: downloaded when it is a link. Returns [text, error].
 function listsCustomText($url, $text) {
     if ($url === '') return [(string)$text, ''];
-    $tmp = tempnam(sys_get_temp_dir(), 'krlist_');
+    $tmp = tempnam(listsTempDir(), 'krlist_');
     $error = listsDownload($url, $tmp);
     $body = $error === '' ? (string)file_get_contents($tmp) : '';
     @unlink($tmp);
@@ -2318,6 +2332,8 @@ function doDeleteList(SQLite3 $db, $in) {
 
 // One list, or all enabled ones; the routes are applied once at the end.
 function doSyncLists(SQLite3 $db, $in) {
+    ini_set('memory_limit', '128M');
+    set_time_limit(300); // также увеличьте таймаут выполнения до 5 минут
     $id = (int)($in['id'] ?? 0);
     $ids = $id ? [$id] : array_column(rows($db, 'SELECT id FROM lists WHERE enabled = 1'), 'id');
     if (!$ids) return ['success' => true, 'working' => false, 'count' => 0];
