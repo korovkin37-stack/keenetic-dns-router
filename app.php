@@ -1,5 +1,5 @@
 <?php
-const APP_VERSION = '5.45.4';
+const APP_VERSION = '5.45.5';
 const COOKIE_NAME = 'krdns_auth';
 const COOKIE_TTL = 604800;
 
@@ -38,6 +38,39 @@ function findConfig() {
 
 $configFile = findConfig();
 if ($configFile !== null) include $configFile;
+
+// ============================================ TEMP FILES ============================================
+// One folder for every temporary file of the panel: task state and logs, locks, downloads, update stages.
+// /opt/tmp when it is there and can be written to (the system /tmp on the router is RAM and small),
+// otherwise the system one.
+// The answer must be the same for the web user and for root: a task started by an ndm hook writes its
+// state as root and the page polls it as the web user. In two different folders the task looks stuck with
+// an empty log, and the two writers do not even share the lock.
+function tempDir() {
+    static $dir = null;
+    if ($dir !== null) return $dir;
+    $opt = '/opt/tmp';
+    if (is_dir($opt)) {
+        // root (a hook, the CLI) opens the folder for the web user once; a web request cannot chmod it.
+        // No sticky bit: the panel replaces files made by the other user (job state, the .pending marker).
+        if (isRoot() && (fileperms($opt) & 0777) !== 0777) @chmod($opt, 0777);
+        if (is_writable($opt)) return $dir = $opt;
+    }
+    return $dir = sys_get_temp_dir();
+}
+
+// The old name of the same folder: one implementation, kept for anything that may still call it.
+function listsTempDir() { return tempDir(); }
+
+// One setting read where no database handle is at hand (the downloads): opens the base for a moment
+// and closes it, instead of leaving a second connection open for the rest of the request.
+// Read fresh every time: a long task must see a setting changed while it runs.
+function panelSetting($key) {
+    $db = getDb();
+    $value = $db ? (string)getSetting($db, $key) : '';
+    if ($db) $db->close();
+    return $value;
+}
 
 function hasPasswordHash() {
     global $auth_pass_hash;
@@ -83,7 +116,7 @@ function checkAuthCookie() {
 function doLogin($in) {
     global $auth_user, $auth_pass_hash;
     // 5 wrong passwords from one address lock it out for 5 minutes
-    $file = sys_get_temp_dir() . '/dns-router-login.json';
+    $file = tempDir() . '/dns-router-login.json';
     $ip = (string)($_SERVER['REMOTE_ADDR'] ?? '');
     $fails = json_decode((string)@file_get_contents($file), true) ?: [];
     $fails = array_filter($fails, fn($f) => $f['until'] > time() || $f['last'] > time() - 300);
@@ -240,7 +273,7 @@ function execReadOnly(array $argv) {
 }
 
 function writeFileAsRoot($path, $content, $backup = false, $owner = null) {
-    $tmp = tempnam(sys_get_temp_dir(), 'krdns_');
+    $tmp = tempnam(tempDir(), 'krdns_');
     if ($tmp === false || file_put_contents($tmp, $content) === false) return false;
     $perms = @fileperms($path);
     if ($backup && file_exists($path)) {
@@ -267,7 +300,7 @@ function ipRouteFlush($table) {
 
 // Applies many routes with one root call: "ip -force -batch" keeps going past duplicates.
 function ipRouteBatch(array $lines) {
-    $tmp = tempnam(sys_get_temp_dir(), 'krroutes_');
+    $tmp = tempnam(tempDir(), 'krroutes_');
     if ($tmp === false || file_put_contents($tmp, implode("\n", $lines) . "\n") === false) return false;
     chmod($tmp, 0644);
     $out = execAsRoot(['/opt/sbin/ip', '-force', '-batch', $tmp]);
@@ -292,7 +325,7 @@ function listTable($ourTable) {
 // One writer at a time: web requests and ndm hooks both rebuild the same tables.
 // A hook that finds the lock busy leaves a marker and the running writer repeats once.
 function locked(callable $fn, $nowait = false) {
-    $file = sys_get_temp_dir() . '/dns-router.lock';
+    $file = tempDir() . '/dns-router.lock';
     $h = fopen($file, 'c');
     @chmod($file, 0666);
     if (!flock($h, $nowait ? LOCK_EX | LOCK_NB : LOCK_EX)) {
@@ -1596,6 +1629,13 @@ function systemChecks() {
     $add('curl', 'curl (downloads for Lists)', listsCurl() !== '', 'optional',
         'Downloads the lists of IPs and domains from the source over HTTPS.', ['opkg update && opkg install curl ca-bundle'], 'installCurl');
 
+    $tmp = tempDir();
+    $tmpOk = is_writable($tmp);
+    $add('temp', 'Temporary files folder', $tmpOk, 'required',
+        $tmpOk ? 'Task state, logs and downloads: ' . $tmp
+               : 'The panel cannot write to ' . $tmp . ': tasks would hang with an empty log.',
+        $tmpOk ? [] : ['chmod 0777 ' . $tmp, $restart]);
+
     $openssl = phpCliModule('openssl');
     $add('openssl', 'PHP OpenSSL (DoT and QUIC in the DPI check)', $openssl['ok'], 'optional',
         $openssl['error'] !== '' ? 'The module is installed but does not load: the PHP core and the module are of different versions. ' . $openssl['error'] : 'The DoT and QUIC columns of the DPI check need it.',
@@ -1936,7 +1976,7 @@ const UPDATE_BLOCKS = [
 ];
 
 function jobIsRunning() {
-    $prefix = sys_get_temp_dir() . '/dns-router-';
+    $prefix = tempDir() . '/dns-router-';
     $job = json_decode((string)@file_get_contents($prefix . 'job.json'), true);
     if (!$job || $job['state'] !== 'running') return false;
     $pid = (int)(json_decode((string)@file_get_contents($prefix . 'jobpid.json'), true)['pid'] ?? 0);
@@ -1990,7 +2030,7 @@ function handleRequest() {
         }
 
         // While the panel files are being replaced old and new code would answer side by side
-        $maintenance = sys_get_temp_dir() . '/dns-router-maintenance';
+        $maintenance = tempDir() . '/dns-router-maintenance';
         if ($action !== 'state' && is_file($maintenance) && filemtime($maintenance) > time() - 120) fail('The panel is being updated: try again in a minute', 503);
         if (in_array($action, UPDATE_BLOCKS, true) && jobIsRunning()) fail('An update is running: wait for it to finish', 409);
 
@@ -1998,7 +2038,7 @@ function handleRequest() {
         if (in_array($action, ['testRoute', 'testRouteCurl', 'testDnsResolver'], true)) {
             $testLock = null;
             foreach ([1, 2] as $slot) {
-                $h = fopen(sys_get_temp_dir() . '/dns-router-test' . $slot . '.lock', 'c');
+                $h = fopen(tempDir() . '/dns-router-test' . $slot . '.lock', 'c');
                 if (flock($h, LOCK_EX | LOCK_NB)) {
                     $testLock = $h;
                     break;
@@ -2027,6 +2067,11 @@ function cliInstall() {
 
     if (!isRoot()) exit("install must run as root\n");
     if (trim((string)shell_exec('id -u ' . escapeshellarg($webUser) . ' 2>/dev/null')) === '') exit("User $webUser does not exist\n");
+
+    // The temp folder must exist and be writable by the web user, otherwise root and the panel
+    // would each pick their own (see tempDir()).
+    if (!is_dir('/opt/tmp')) @mkdir('/opt/tmp', 0777, true);
+    if (is_dir('/opt/tmp')) @chmod('/opt/tmp', 0777);
 
     if ($configFile === null) {
         $routerPass = (string)getenv('DNSR_ROUTER_PASS');
@@ -2117,6 +2162,7 @@ function fixDataOwnership() {
         if ($f && file_exists($f)) @chown($f, $uid);
     }
     if ($db_file && file_exists($db_file)) @chmod($db_file, 0660);
+    if (is_dir('/opt/tmp') && (fileperms('/opt/tmp') & 0777) !== 0777) @chmod('/opt/tmp', 0777);
 }
 
 function configText(array $vars) {
@@ -2184,11 +2230,27 @@ function runCli(array $argv) {
             $r = hooksInstall();
             foreach ($r['hooks'] as $h) echo ($h['installed'] ? 'ok   ' : 'FAIL ') . $h['path'] . "\n";
             break;
+        case 'fetch':
+            // Diagnostic of the download path: exactly the code the lists use, with the panel's settings.
+            // Says which folder, which curl, which interface, how long it took and why it failed.
+            $url = (string)($argv[2] ?? '');
+            if ($url === '') exit("Usage: app.php fetch <url>\n");
+            extHandlers();
+            echo 'temp folder: ' . tempDir() . "\n";
+            echo 'curl: ' . (listsCurl() ?: 'not installed') . "\n";
+            echo 'interface: ' . (panelSetting('curl_interface') ?: '(not set, normal routing)') . "\n";
+            $tmp = tempnam(tempDir(), 'krprobe_');
+            $t = microtime(true);
+            $error = listsDownload($url, $tmp);
+            printf("time: %.1f s, bytes: %d\n", microtime(true) - $t, (int)@filesize($tmp));
+            @unlink($tmp);
+            echo $error === '' ? "OK\n" : $error . "\n";
+            break;
         case 'checks':
             foreach (systemChecks() as $c) echo ($c['ok'] === null ? '[ ? ] ' : ($c['ok'] ? '[ok] ' : '[!!] ')) . $c['label'] . ($c['ok'] === false ? " - {$c['detail']}\n      " . implode("\n      ", $c['fix']) : '') . "\n";
             break;
         default:
-            echo "Usage: app.php <apply|update|event|sync|listsync|job|passwd|hooks|checks|install>\n";
+            echo "Usage: app.php <apply|update|event|sync|listsync|job|fetch|passwd|hooks|checks|install>\n";
     }
 }
 
