@@ -1631,12 +1631,11 @@ function listsDownload($url, $file) {
     $iface = (string)getSetting(getDb(), 'curl_interface');
     $bind = $iface === '' ? '' : ' --interface ' . escapeshellarg($iface);
     $maxFilesize = "100M";
-    $maxTime = 20;
     // http(s) only, redirects only to https, at most 100 MB: /tmp on the router is RAM
     $limits = ' --proto =http,https --proto-redir =https --max-filesize '.$maxFilesize;
     exec(escapeshellarg($curl) . $bind . $limits . ' -fsSL --connect-timeout 10 -m 60 -o ' . escapeshellarg($file) . ' ' . escapeshellarg($url) . ' 2>&1', $out, $code);
     if ($code === 63) return 'Download failed: the file is larger than '.$maxFilesize;
-    if ($code !== 0) return 'Download failed: ' . trim(implode(' ', $out));
+    if ($code !== 0) return 'Download failed: 123' . trim(implode(' ', $out));
     return '';
 }
 
