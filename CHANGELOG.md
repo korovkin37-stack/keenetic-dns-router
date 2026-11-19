@@ -2,6 +2,9 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.45.4
+- Fix bugs.
+
 ## 5.45.3
 - Fix bugs.
 
