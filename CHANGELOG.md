@@ -2,6 +2,17 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.45.6
+- Fix bugs.
+
+## 5.45.5
+- One folder for every temporary file of the panel: task state and logs, locks, downloads and update stages. Before, downloads and update stages went to /opt/tmp while the task state and the writer's lock went to the system temp folder: a task started by a router event could write where the page does not look, and the two writers did not share the lock. Root opens /opt/tmp for the web user so both see the same folder; without it the system one is used.
+- Old update stages are really cleaned up: they were created in one folder and looked for in another, so the leftovers of a failed update stayed on the drive.
+- System checks: "Temporary files folder" shows which folder the panel uses and whether it can write to it.
+- Downloads (lists and catalog, own lists by a link, GitHub): a failed connection is retried twice instead of failing the whole list, the connect gets 15 s instead of 10 and the transfer 120 s instead of 60, and a transfer that stalled is cut instead of hanging. IPv4 only, like the rest of the panel; proxy variables of the environment are ignored.
+- A download that failed says why: the reason, the interface it went through and its state when it is down, the host and the text of curl. An interface that no longer exists on the router is reported before curl is even started. The stray "123" in the message is gone.
+- app.php fetch <url> from the shell: checks the download path with the panel's own settings and prints the folder, the curl, the interface, the seconds, the bytes and the reason.
+
 ## 5.45.4
 - Fix bugs.
 

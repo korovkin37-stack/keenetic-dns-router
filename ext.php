@@ -3,17 +3,6 @@ defined("APP_VERSION") || exit;
 // Optional tabs: routing tables, Test Route, DNS info, clients, interfaces, dashboard, bird4.
 // Loaded by app.php only when one of these actions is requested.
 
-function listsTempDir() {
-    static $dir = null;
-    if ($dir !== null) return $dir;
-    if (is_dir('/opt/tmp') && is_writable('/opt/tmp')) {
-        $dir = '/opt/tmp';
-    } else {
-        $dir = sys_get_temp_dir();
-    }
-    return $dir;
-}
-
 function toNumber($v) {
     return is_numeric($v) ? $v + 0 : 0;
 }
@@ -984,7 +973,7 @@ function doSaveBirdConfig($content) {
     $res = ['success' => true, 'checked' => false, 'check_output' => '', 'backup_file' => $bird_config_file . '.bak'];
     $bird = trim(execPipelineAsRoot('command -v bird || command -v bird4'));
     if ($bird !== '' && $bird[0] === '/') {
-        $tmp = tempnam(sys_get_temp_dir(), 'krbird_');
+        $tmp = tempnam(tempDir(), 'krbird_');
         file_put_contents($tmp, $content);
         chmod($tmp, 0644);
         $out = execPipelineAsRoot(escapeshellarg($bird) . ' -p -c ' . escapeshellarg($tmp) . ' 2>&1; echo "rc=$?"');
@@ -1356,11 +1345,11 @@ function fileVersion($path) {
 
 function updateStageDir($token) {
     if (!preg_match('/^[a-f0-9]{16}$/', (string)$token)) fail('Bad update token');
-    return listsTempDir() . '/dnsr_update_' . $token;
+    return tempDir() . '/dnsr_update_' . $token;
 }
 
 function updateRemoveStage($dir) {
-    if (strpos($dir, listsTempDir() . '/dnsr_update_') !== 0) return;
+    if (strpos($dir, tempDir() . '/dnsr_update_') !== 0) return;
     foreach (glob($dir . '/*') ?: [] as $f) @unlink($f);
     @rmdir($dir);
 }
@@ -1419,7 +1408,7 @@ function updateStage($raw) {
     if (strlen($raw) < 100) return ['success' => false, 'error' => 'The file is empty or damaged'];
     if (strlen($raw) > 5 * 1024 * 1024) return ['success' => false, 'error' => 'The archive is larger than 5 MB'];
 
-    foreach (glob(sys_get_temp_dir() . '/dnsr_update_*') ?: [] as $old) {
+    foreach (glob(tempDir() . '/dnsr_update_*') ?: [] as $old) {
         if (is_dir($old) && filemtime($old) < time() - 3600) updateRemoveStage($old);
     }
     $token = bin2hex(random_bytes(8));
@@ -1468,13 +1457,13 @@ const GITHUB_REPO = 'korovkin37-stack/keenetic-dns-router';
 // The newest release and what changed since the installed version (the CHANGELOG.md of that tag).
 // The answer is kept for 6 hours, so opening the page does not ask GitHub every time.
 function doCheckGithubUpdate($in) {
-    $cacheFile = sys_get_temp_dir() . '/dns-router-github.json';
+    $cacheFile = tempDir() . '/dns-router-github.json';
     $cache = json_decode((string)@file_get_contents($cacheFile), true);
     // the notes come from CHANGELOG.<lang>.md when the release has one, otherwise from the English CHANGELOG.md
     $lang = preg_match('/^[a-z]{2,3}$/', (string)($in['lang'] ?? '')) ? (string)$in['lang'] : 'en';
     if ($cache && empty($in['force']) && $cache['checked'] > time() - 6 * 3600 && $cache['current'] === APP_VERSION && $cache['lang'] === $lang) return $cache;
 
-    $tmp = tempnam(listsTempDir(), 'krgh_');
+    $tmp = tempnam(tempDir(), 'krgh_');
     $error = listsDownload('https://api.github.com/repos/' . GITHUB_REPO . '/releases/latest', $tmp);
     $release = json_decode((string)file_get_contents($tmp), true);
     @unlink($tmp);
@@ -1495,7 +1484,7 @@ function doCheckGithubUpdate($in) {
     $notes = [];
     $newer = version_compare($latest, APP_VERSION, '>');
     if ($newer) {
-        $tmp = tempnam(sys_get_temp_dir(), 'krgh_');
+        $tmp = tempnam(tempDir(), 'krgh_');
         $raw = 'https://raw.githubusercontent.com/' . GITHUB_REPO . '/' . rawurlencode($tag) . '/';
         $found = $lang !== 'en' && listsDownload($raw . 'CHANGELOG.' . $lang . '.md', $tmp) === '';
         if ($found || listsDownload($raw . 'CHANGELOG.md', $tmp) === '') {
@@ -1525,7 +1514,7 @@ function doGithubDownloadUpdate() {
     if (!$check['newer']) return ['success' => false, 'error' => 'The release on GitHub is not newer than this version'];
     if ($check['asset'] === '') return ['success' => false, 'error' => 'The release has no dns-router.tar.gz'];
     if ($check['digest'] === '') return ['success' => false, 'error' => 'GitHub gave no checksum for the archive'];
-    $tmp = tempnam(listsTempDir(), 'krgh_');
+    $tmp = tempnam(tempDir(), 'krgh_');
     $error = listsDownload($check['asset'], $tmp);
     $raw = (string)file_get_contents($tmp);
     @unlink($tmp);
@@ -1549,7 +1538,7 @@ function updateInstallFiles($src, array $names) {
     }
     $cmd .= 'rm -rf ' . escapeshellarg("$b/prev") . '; mv ' . escapeshellarg("$b/new") . ' ' . escapeshellarg("$b/prev") . '; echo DNSR_OK';
     // other requests wait until the files and hooks are all of one version
-    $maintenance = sys_get_temp_dir() . '/dns-router-maintenance';
+    $maintenance = tempDir() . '/dns-router-maintenance';
     file_put_contents($maintenance, (string)time());
     $out = execPipelineAsRoot($cmd . ' 2>&1');
     if (strpos($out, 'DNSR_OK') === false) {
@@ -1625,18 +1614,63 @@ function listsSourceUrl(SQLite3 $db, $name) {
 }
 
 // Downloads $url into $file with curl. Returns '' on success, an error text otherwise.
+// The budgets of one download, in one place: the connect has its own, the transfer its own,
+// and the retries together are capped so a web request (the catalog) cannot outlive its time limit.
+const LIST_CONNECT_TIMEOUT = 15;    // s for TCP + TLS connect
+const LIST_MAX_TIME = 120;          // s for one whole attempt
+const LIST_RETRY_MAX_TIME = 60;     // s for all retries together
+const LIST_MAX_FILESIZE = '100M';
+
 function listsDownload($url, $file) {
     $curl = listsCurl();
     if ($curl === '') return 'curl is not installed: Service, System checks, "curl"';
-    $iface = (string)getSetting(getDb(), 'curl_interface');
-    $bind = $iface === '' ? '' : ' --interface ' . escapeshellarg($iface);
-    $maxFilesize = "100M";
-    // http(s) only, redirects only to https, at most 100 MB: /tmp on the router is RAM
-    $limits = ' --proto =http,https --proto-redir =https --max-filesize '.$maxFilesize;
-    exec(escapeshellarg($curl) . $bind . $limits . ' -fsSL --connect-timeout 10 -m 60 -o ' . escapeshellarg($file) . ' ' . escapeshellarg($url) . ' 2>&1', $out, $code);
-    if ($code === 63) return 'Download failed: the file is larger than '.$maxFilesize;
-    if ($code !== 0) return 'Download failed: 123' . trim(implode(' ', $out));
-    return '';
+    $iface = panelSetting('curl_interface');
+    // an interface that is gone (a tunnel deleted in Keenetic) would fail with an opaque curl code
+    if ($iface !== '' && !is_dir('/sys/class/net/' . $iface)) {
+        return 'Download failed: the interface ' . $iface . ' no longer exists (Settings, "Downloads through the interface")';
+    }
+    $host = (string)(parse_url($url, PHP_URL_HOST) ?: $url);
+
+    // -4: the whole panel works with IPv4 (A records, IPv4 routes), so the download does the same.
+    // It takes the IPv6 attempt out of the picture: a router that has an IPv6 route but no working
+    // IPv6 can spend part of the connect budget on it, and old curl builds have no happy eyeballs.
+    $args = [$curl, '-4', '-fsSL', '--noproxy', '*'];
+    if ($iface !== '') array_push($args, '--interface', $iface);
+    // http(s) only, redirects only to https, a size limit: the temp folder may still be RAM
+    array_push($args, '--proto', '=http,https', '--proto-redir', '=https', '--max-filesize', LIST_MAX_FILESIZE);
+    array_push($args,
+        '--connect-timeout', (string)LIST_CONNECT_TIMEOUT,
+        '--max-time', (string)LIST_MAX_TIME,
+        // a transfer that stalled is cut instead of hanging until the max time
+        '--speed-limit', '1024', '--speed-time', '20',
+        // a transient failure (timeout, refused, 5xx) is retried instead of failing the whole list
+        '--retry', '2', '--retry-delay', '3', '--retry-connrefused', '--retry-max-time', (string)LIST_RETRY_MAX_TIME,
+        '-o', $file, $url);
+    exec(implode(' ', array_map('escapeshellarg', $args)) . ' 2>&1', $out, $code);
+    if ($code === 0) return '';
+
+    // Which way the download went: with a bound interface its state is the first thing to look at
+    $through = '';
+    if ($iface !== '') {
+        $state = trim((string)@file_get_contents('/sys/class/net/' . $iface . '/operstate'));
+        $through = ' through ' . $iface . ($state === 'down' ? ' (down)' : '');
+    }
+    // The wording is deliberately unlike curl's own English: the translator replaces known phrases
+    // inside a text, and short ones like "timed out" would also rewrite curl's message next to it.
+    $reason = [
+        6  => 'the name did not resolve',
+        7  => 'no connection' . $through,
+        22 => 'the server refused the request',
+        28 => 'no answer within the timeout' . $through,
+        35 => 'TLS handshake failed' . $through,
+        45 => 'could not bind to the interface ' . $iface,
+        60 => 'the certificate could not be verified (opkg install ca-bundle)',
+        63 => 'the file is larger than ' . LIST_MAX_FILESIZE,
+    ][$code] ?? ('curl exit code ' . $code . $through);
+    // curl prints the same line on every retry: one copy is enough
+    $why = trim((string)preg_replace('/\s+/', ' ', implode(' ', array_unique($out))));
+    // the reason and the detail are separated by a dash: the translator takes them apart one by one
+    return 'Download failed: ' . $reason . ' — ' . $host . ($why !== '' ? ': ' . $why : '');
 }
 
 // One request to the source: format=text returns one value per line.
@@ -1646,7 +1680,7 @@ function listsDataUrl($sourceUrl, $site, $data) {
 
 function listsFetchLines($sourceUrl, $site, $data, &$error) {
     $url = listsDataUrl($sourceUrl, $site, $data);
-    $tmp = tempnam(listsTempDir(), 'krlist_');
+    $tmp = tempnam(tempDir(), 'krlist_');
     $error = listsDownload($url, $tmp);
     $lines = [];
     $fh = $error === '' ? fopen($tmp, 'r') : false;
@@ -1803,7 +1837,8 @@ function startBackground($arguments, $then = '') {
     // The log is named after the uid of the process that starts it ($(id -u), not getmyuid(), which is the owner of app.php):
     // a file left by root cannot be opened by the web user, and then the shell would not start the command at all.
     // setsid takes the process out of php-fpm's process group, so a restart of php-fpm does not kill it.
-    $log = '/opt/tmp/dns-router-lists-$(id -u).log';
+    // $(id -u) is left to the shell: the prefix is quoted, the uid is not
+    $log = escapeshellarg(tempDir() . '/dns-router-lists-') . '$(id -u).log';
     $detach = trim((string)shell_exec('command -v setsid 2>/dev/null')) !== '' ? 'setsid ' : '';
     exec('(' . $detach . $cmd . ' </dev/null >' . $log . ' 2>&1 & echo $!)', $out);
     return (int)($out[0] ?? 0);
@@ -1812,12 +1847,12 @@ function startBackground($arguments, $then = '') {
 // Progress of a running update lives in small files in the temp folder: the page polls it every 2 seconds
 // and must not queue behind the database.
 function jobRead($name) {
-    $text = @file_get_contents(sys_get_temp_dir() . '/dns-router-' . $name . '.json');
+    $text = @file_get_contents(tempDir() . '/dns-router-' . $name . '.json');
     return $text === false ? null : json_decode($text, true);
 }
 
 function jobWrite($name, $data) {
-    $file = sys_get_temp_dir() . '/dns-router-' . $name . '.json';
+    $file = tempDir() . '/dns-router-' . $name . '.json';
     if ($data === null) {
         if (!@unlink($file)) @file_put_contents($file, '');
         return;
@@ -1841,7 +1876,7 @@ function listsStage($id, $text, $site = '') {
 
 // The log of the last update: one line per event, shown by the page on demand.
 function jobLog($text) {
-    $file = sys_get_temp_dir() . '/dns-router-job.log';
+    $file = tempDir() . '/dns-router-job.log';
     file_put_contents($file, date('H:i:s') . ' ' . $text . "\n", FILE_APPEND | LOCK_EX);
     @chmod($file, 0666);
 }
@@ -2118,7 +2153,7 @@ function doGetListsCatalog(SQLite3 $db, $refresh, $sourceName = '') {
     $cached = getSetting($db, $cacheKey);
     if ($cached && !$refresh) return ['sites' => json_decode($cached, true), 'cached' => true];
 
-    $tmp = tempnam(listsTempDir(), 'krcat_');
+    $tmp = tempnam(tempDir(), 'krcat_');
     $error = listsDownload(listsSourceUrl($db, $sourceName) . '/?format=json', $tmp);
     if ($error !== '') {
         @unlink($tmp);
@@ -2198,7 +2233,7 @@ function textCut($s, $width) {
 // The text of an own list: downloaded when it is a link. Returns [text, error].
 function listsCustomText($url, $text) {
     if ($url === '') return [(string)$text, ''];
-    $tmp = tempnam(listsTempDir(), 'krlist_');
+    $tmp = tempnam(tempDir(), 'krlist_');
     $error = listsDownload($url, $tmp);
     $body = $error === '' ? (string)file_get_contents($tmp) : '';
     @unlink($tmp);
@@ -2361,7 +2396,7 @@ const JOB_HISTORY_MAX = 20;
 const JOB_QUEUE_MAX = 6;
 
 function jobLock() {
-    $file = sys_get_temp_dir() . '/dns-router-jobq.lock';
+    $file = tempDir() . '/dns-router-jobq.lock';
     $handle = fopen($file, 'c');
     @chmod($file, 0666);
     flock($handle, LOCK_EX);
@@ -2379,7 +2414,7 @@ function jobAlive($job) {
 // Finished jobs are kept (newest first) with the tail of their log: the task manager shows them
 function jobArchive($job) {
     if (empty($job['id'])) return;
-    $file = sys_get_temp_dir() . '/dns-router-jobhist.json';
+    $file = tempDir() . '/dns-router-jobhist.json';
     $handle = fopen($file, 'c+');
     @chmod($file, 0666);
     flock($handle, LOCK_EX);
@@ -2390,7 +2425,7 @@ function jobArchive($job) {
             return;
         }
     }
-    $lines = @file(sys_get_temp_dir() . '/dns-router-job.log', FILE_IGNORE_NEW_LINES) ?: [];
+    $lines = @file(tempDir() . '/dns-router-job.log', FILE_IGNORE_NEW_LINES) ?: [];
     $keep = ['id', 'kind', 'source', 'events', 'state', 'started', 'finished', 'steps', 'step', 'total', 'done', 'failed', 'held', 'targets_changed', 'target_errors', 'routes', 'route_errors', 'route_error', 'rule_error', 'error'];
     $entry = array_intersect_key($job, array_flip($keep));
     $entry['finished'] = $job['finished'] ?? time();
@@ -2503,7 +2538,7 @@ function jobPrepare(SQLite3 $db, $kind, $source, array $params = []) {
         }
     }
     if ($kind !== 'sync') listsMarkWorking($db, $ids);
-    $logFile = sys_get_temp_dir() . '/dns-router-job.log';
+    $logFile = tempDir() . '/dns-router-job.log';
     if (!@unlink($logFile)) @file_put_contents($logFile, '');
     jobWrite('stage', null);
     jobWrite('jobpid', ['pid' => 0]);
@@ -2604,13 +2639,13 @@ function doGetJob() {
     $job['stage'] = $stage ? $stage['text'] : '';
     $job['site'] = $stage && $stage['id'] ? $job['sites'][$stage['id']] : '';
     if ($job['step'] === 'apply' || $job['state'] === 'done') $job['done'] = $job['total'];
-    $log = @file_get_contents(sys_get_temp_dir() . '/dns-router-job.log');
+    $log = @file_get_contents(tempDir() . '/dns-router-job.log');
     $job['log'] = $log === false ? '' : $log;
     return ['job' => $job, 'queue' => $queue];
 }
 
 function jobHistory() {
-    return json_decode((string)@file_get_contents(sys_get_temp_dir() . '/dns-router-jobhist.json'), true) ?: [];
+    return json_decode((string)@file_get_contents(tempDir() . '/dns-router-jobhist.json'), true) ?: [];
 }
 
 function doGetJobHistory() {
@@ -2627,7 +2662,7 @@ function doGetJobLog($id) {
 }
 
 function doClearJobHistory() {
-    @file_put_contents(sys_get_temp_dir() . '/dns-router-jobhist.json', '[]');
+    @file_put_contents(tempDir() . '/dns-router-jobhist.json', '[]');
     return ['success' => true];
 }
 
@@ -3957,7 +3992,7 @@ function dpiDnsDohMany(array $names, $iface) {
     $commands = [];
     $files = [];
     foreach ($names as $name) {
-        $files[$name] = tempnam(sys_get_temp_dir(), 'krdoh_');
+        $files[$name] = tempnam(tempDir(), 'krdoh_');
         $cmd = dpiCurl($iface, 8);
         array_push($cmd, '-H', 'accept: application/dns-json', '-o', $files[$name], 'https://cloudflare-dns.com/dns-query?type=A&name=' . rawurlencode($name));
         $commands[$name] = $cmd;
