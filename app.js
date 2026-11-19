@@ -1,7 +1,7 @@
 // app.js - клиентская логика
 
 const API = '/app.php';
-const JS_VERSION = '5.45.4'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.46.0'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -603,6 +603,7 @@ function initApp() {
                 loadDnsResolver();
                 loadPanelNet();
                 loadJobDelay();
+                loadLimits();
             }
             if (state.currentTab === 'tools') {
                 loadDependencyStatus();
@@ -2587,6 +2588,9 @@ document.getElementById('openUpdateBtn').addEventListener('click', () => {
     checkGithubUpdate(false);
     document.getElementById('updateModal').style.display = 'block';
 });
+// The badge shows the version of the code that is really running: index.html carries no number
+// of its own, so a stale page can never show a version that is not there.
+document.getElementById('versionBtn').textContent = 'v' + JS_VERSION;
 document.getElementById('versionBtn').addEventListener('click', () => {
     loadUpdateInfo();
     checkGithubUpdate(false);
@@ -4974,6 +4978,7 @@ const DNS_PRESETS = [
 ];
 let dnsPicked = [];
 let dnsMode = 'first';
+let dnsMaxServers = 8;
 let dnsSaved = '';
 
 function dnsSnapshot() { return dnsPicked.join(' ') + '|' + dnsMode + '|' + dnsRouteValue(); }
@@ -5034,7 +5039,7 @@ function dnsAdd(ip) {
     ip = ip.trim();
     if (!BW_IPV4.test(ip)) { showToast(t('Not an IPv4 address: {0}', ip), 'error'); return; }
     if (dnsPicked.includes(ip)) return;
-    if (dnsPicked.length >= 8) { showToast('At most 8 DNS servers', 'error'); return; }
+    if (dnsPicked.length >= dnsMaxServers) { showToast(t('At most {0} DNS servers', dnsMaxServers), 'error'); return; }
     dnsPicked.push(ip);
     renderDnsPicker();
 }
@@ -5042,6 +5047,7 @@ function dnsAdd(ip) {
 async function loadDnsResolver() {
     const r = await (await apiFetch(API + '?action=getDnsResolver')).json();
     dnsPicked = (r.servers || '').split(/\s+/).filter(Boolean);
+    dnsMaxServers = r.max_servers || 8;
     document.getElementById('dnsNoNslookup').hidden = r.nslookup !== false;
     dnsMode = r.mode === 'all' ? 'all' : 'first';
     document.getElementById('dnsRouteOn').checked = !!r.route_iface;
@@ -5166,6 +5172,111 @@ document.getElementById('jobDelay').addEventListener('change', async (e) => {
     flashSaved('jobDelaySaved');
 });
 document.getElementById('testDnsBtn').addEventListener('click', testDnsResolver);
+
+// ============================================ TIMEOUTS AND LIMITS ============================================
+// The rows are drawn from the registry in app.php (getLimits): the bounds, the defaults and the hints
+// sit next to the code that uses them, so the page cannot drift away from the backend.
+let limitsGroups = [];
+const limitsOpen = new Set();
+
+function limitsChangedCount() {
+    return limitsGroups.reduce((n, g) => n + g.changed, 0);
+}
+
+function renderLimits() {
+    const box = document.getElementById('limitsGroups');
+    if (!limitsGroups.length) { box.innerHTML = `<p class="card-note">${escapeHtml(t('Failed to load: {0}', t('timeouts and limits')))}</p>`; return; }
+    box.innerHTML = limitsGroups.map(g => {
+        const rows = g.items.map(it => `
+            <div class="set-row lim-row${it.changed ? ' changed' : ''}">
+                <span class="look-label">${escapeHtml(t(it.label))} <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="${escapeHtml(t(it.hint))}">i</span></span>
+                <span class="set-ctl">
+                    <span class="set-saved" data-saved="${it.key}">${escapeHtml(t('Saved'))}</span>
+                    <input type="number" class="lim-input" data-key="${it.key}" value="${it.value}" min="${it.min}" max="${it.max}" step="${it.step}" aria-label="${escapeHtml(t(it.label))}">
+                    <span class="lim-unit">${escapeHtml(it.unit ? t(it.unit) : '')}</span>
+                    <button type="button" class="lim-reset" data-reset="${it.key}" title="${escapeHtml(t('Default: {0}', it.default))}"${it.changed ? '' : ' disabled'}>↺</button>
+                </span>
+            </div>`).join('');
+        const meta = g.changed ? t('changed: {0}', g.changed) : t('defaults');
+        return `<details class="lim-group" data-group="${g.id}"${limitsOpen.has(g.id) ? ' open' : ''}>
+            <summary><span class="lim-name">${escapeHtml(t(g.label))}</span><span class="lim-meta${g.changed ? ' on' : ''}">${escapeHtml(meta)}</span></summary>
+            <p class="card-note">${escapeHtml(t(g.note))}</p>
+            <div class="lim-rows">${rows}</div>
+            <button type="button" class="btn btn-small lim-group-reset" data-group-reset="${g.id}"${g.changed ? '' : ' disabled'}>${escapeHtml(t('Reset group'))}</button>
+        </details>`;
+    }).join('');
+    const total = limitsChangedCount();
+    const mark = document.getElementById('limitsChanged');
+    mark.hidden = !total;
+    mark.textContent = total ? t('Changed from the defaults: {0}', total) : '';
+    document.getElementById('limitsResetBtn').disabled = !total;
+}
+
+async function loadLimits() {
+    let r;
+    try {
+        r = await (await apiFetch(API + '?action=getLimits')).json();
+    } catch (error) {
+        r = { error: error.message };
+    }
+    if (!r.groups) {
+        document.getElementById('limitsGroups').innerHTML = `<p class="card-note">${escapeHtml(t('Failed to load: {0}', r.error || ''))}</p>`;
+        return;
+    }
+    limitsGroups = r.groups;
+    renderLimits();
+}
+
+// The server is the only judge of a value: it answers with the whole registry, so every row, every
+// "changed" mark and the bound check come back from one place.
+async function limitsSend(payload, savedKey) {
+    const r = await api(payload);
+    if (r.error || !r.groups) {
+        showToast(t(r.error || 'Failed'), 'error');
+        renderLimits();
+        return;
+    }
+    limitsGroups = r.groups;
+    renderLimits();
+    if (savedKey) {
+        const mark = document.querySelector(`[data-saved="${savedKey}"]`);
+        if (mark) {
+            mark.classList.add('on');
+            setTimeout(() => mark.classList.remove('on'), 1800);
+        }
+    } else {
+        showToast(t('Defaults restored'), 'success');
+    }
+}
+
+document.getElementById('limitsGroups').addEventListener('change', (e) => {
+    const input = e.target.closest('.lim-input');
+    if (!input) return;
+    const raw = input.value.trim();
+    if (raw === '' || !isFinite(Number(raw))) {
+        showToast(t('{0}: not a number', input.getAttribute('aria-label')), 'error');
+        renderLimits();
+        return;
+    }
+    limitsSend({ action: 'saveLimits', limits: { [input.dataset.key]: Number(raw) } }, input.dataset.key);
+});
+document.getElementById('limitsGroups').addEventListener('click', (e) => {
+    const row = e.target.closest('[data-reset]');
+    if (row) { limitsSend({ action: 'resetLimits', keys: [row.dataset.reset] }, row.dataset.reset); return; }
+    const group = e.target.closest('[data-group-reset]');
+    if (group) limitsSend({ action: 'resetLimits', group: group.dataset.groupReset });
+});
+// an opened group stays open when the rows are drawn again after a save
+document.getElementById('limitsGroups').addEventListener('toggle', (e) => {
+    const g = e.target.closest('.lim-group');
+    if (!g) return;
+    if (g.open) limitsOpen.add(g.dataset.group);
+    else limitsOpen.delete(g.dataset.group);
+}, true);
+document.getElementById('limitsResetBtn').addEventListener('click', async () => {
+    if (await showConfirm(t('Put every timeout and limit back to its default?'), t('Reset'))) limitsSend({ action: 'resetLimits' });
+});
+
 
 // ============================================ THEME ============================================
 function applyTheme(name) {

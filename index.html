@@ -77,7 +77,7 @@
                 <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h10a4 4 0 0 1 0 8H8"></path><path d="M7 5L4 8l3 3"></path></svg></span>
                 <div class="brand-text">
                     <h1>Keenetic DNS Router</h1>
-                    <button type="button" class="version-badge" id="versionBtn" title="Panel update">v5.45.4</button>
+                    <button type="button" class="version-badge" id="versionBtn" title="Panel update"></button>
                 </div>
             </div>
             <nav class="tabs" id="mainNav" aria-label="Sections">
@@ -445,6 +445,18 @@
                     <span class="look-label">Installed version</span>
                     <span class="set-ctl"><span class="upd-num" id="updCardVer">…</span><span class="upd-card-gh" id="updCardGh" hidden></span><button class="btn btn-primary btn-small" id="openUpdateBtn">Update</button></span>
                 </div>
+            </div>
+
+            <div class="tools-section limits-card">
+                <div class="card-head">
+                    <h3>Timeouts and limits <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Every timeout and every limit of the panel, in one place. What you see is what is in force. A value equal to the default is not stored, so an update of the panel keeps your changes and takes the new defaults for everything else. A task that is already running keeps the values it started with: a change applies to the next one.">i</span></h3>
+                    <div class="card-actions">
+                        <span class="dns-dirty" id="limitsChanged" hidden></span>
+                        <button class="btn btn-small" id="limitsResetBtn">Reset all</button>
+                    </div>
+                </div>
+                <p class="card-note">The defaults are the values the panel has always used. Open a group, change a field, leave it: it saves at once. The arrow next to a field puts its default back.</p>
+                <div id="limitsGroups"><p class="card-note">Loading…</p></div>
             </div>
         </div>
 

@@ -3,17 +3,6 @@ defined("APP_VERSION") || exit;
 // Optional tabs: routing tables, Test Route, DNS info, clients, interfaces, dashboard, bird4.
 // Loaded by app.php only when one of these actions is requested.
 
-function listsTempDir() {
-    static $dir = null;
-    if ($dir !== null) return $dir;
-    if (is_dir('/opt/tmp') && is_writable('/opt/tmp')) {
-        $dir = '/opt/tmp';
-    } else {
-        $dir = sys_get_temp_dir();
-    }
-    return $dir;
-}
-
 function toNumber($v) {
     return is_numeric($v) ? $v + 0 : 0;
 }
@@ -101,7 +90,7 @@ function doGetTableRoutesPage($ref, $offset, $limit, $filter) {
     }
 
     $offset = max(0, (int)$offset);
-    $limit = max(1, min(500, (int)$limit)); // защитный потолок на случай кривого запроса с фронта
+    $limit = max(1, min(limit('table_page_max'), (int)$limit)); // защитный потолок на случай кривого запроса с фронта
     $start = $offset + 1;
     $end = $offset + $limit + 1;
 
@@ -372,7 +361,7 @@ function doGetClientConnections($clientIp) {
 
     $total = lastNumericLine(execPipelineAsRoot("$base | wc -l"));
 
-    $limit = 300;
+    $limit = limit('conn_limit');
     $raw = execPipelineAsRoot("$base | head -n $limit");
     $lines = preg_split('/\r?\n/', trim((string)$raw));
 
@@ -534,7 +523,7 @@ function doResolveHostnames($ips) {
         return ['hostnames' => $result];
     }
 
-    $limit = 20;
+    $limit = limit('hostname_limit');
     $count = 0;
     foreach ($ips as $ip) {
         if ($count >= $limit) break;
@@ -984,7 +973,7 @@ function doSaveBirdConfig($content) {
     $res = ['success' => true, 'checked' => false, 'check_output' => '', 'backup_file' => $bird_config_file . '.bak'];
     $bird = trim(execPipelineAsRoot('command -v bird || command -v bird4'));
     if ($bird !== '' && $bird[0] === '/') {
-        $tmp = tempnam(sys_get_temp_dir(), 'krbird_');
+        $tmp = tempnam(tempDir(), 'krbird_');
         file_put_contents($tmp, $content);
         chmod($tmp, 0644);
         $out = execPipelineAsRoot(escapeshellarg($bird) . ' -p -c ' . escapeshellarg($tmp) . ' 2>&1; echo "rc=$?"');
@@ -1058,7 +1047,7 @@ function birdDetectTable() {
 
 function doGetDnsResolver(SQLite3 $db) {
     return ['servers' => (string)getSetting($db, 'dns_servers'), 'mode' => getSetting($db, 'dns_mode') === 'all' ? 'all' : 'first', 'nslookup' => hasNslookup(),
-        'route_iface' => (string)getSetting($db, 'dns_route_iface')];
+        'route_iface' => (string)getSetting($db, 'dns_route_iface'), 'max_servers' => limit('dns_servers_max')];
 }
 
 // The DNS servers of the panel through a chosen interface: a host route per server in the main table,
@@ -1092,7 +1081,8 @@ function dnsRoutesSync(SQLite3 $db) {
 
 function doSaveDnsResolver(SQLite3 $db, $in) {
     $list = dnsServerList($in['servers'] ?? '');
-    if (count($list) > 8) fail('At most 8 DNS servers');
+    $maxServers = limit('dns_servers_max');
+    if (count($list) > $maxServers) fail("At most $maxServers DNS servers");
     foreach ($list as $ip) {
         if (!isValidIPv4($ip)) fail("Not an IPv4 address: $ip");
     }
@@ -1129,7 +1119,8 @@ function doSaveJobSettings(SQLite3 $db, $in) {
 
 function doTestDnsResolver($in) {
     $list = dnsServerList($in['servers'] ?? '');
-    if (count($list) > 8) fail('At most 8 DNS servers');
+    $maxServers = limit('dns_servers_max');
+    if (count($list) > $maxServers) fail("At most $maxServers DNS servers");
     foreach ($list as $ip) {
         if (!isValidIPv4($ip)) fail("Not an IPv4 address: $ip");
     }
@@ -1356,11 +1347,11 @@ function fileVersion($path) {
 
 function updateStageDir($token) {
     if (!preg_match('/^[a-f0-9]{16}$/', (string)$token)) fail('Bad update token');
-    return listsTempDir() . '/dnsr_update_' . $token;
+    return tempDir() . '/dnsr_update_' . $token;
 }
 
 function updateRemoveStage($dir) {
-    if (strpos($dir, listsTempDir() . '/dnsr_update_') !== 0) return;
+    if (strpos($dir, tempDir() . '/dnsr_update_') !== 0) return;
     foreach (glob($dir . '/*') ?: [] as $f) @unlink($f);
     @rmdir($dir);
 }
@@ -1417,10 +1408,11 @@ function doUploadUpdate($b64) {
 function updateStage($raw) {
     global $php_cli;
     if (strlen($raw) < 100) return ['success' => false, 'error' => 'The file is empty or damaged'];
-    if (strlen($raw) > 5 * 1024 * 1024) return ['success' => false, 'error' => 'The archive is larger than 5 MB'];
+    $maxMb = limit('update_max_mb');
+    if (strlen($raw) > $maxMb * 1024 * 1024) return ['success' => false, 'error' => "The archive is larger than $maxMb MB"];
 
-    foreach (glob(sys_get_temp_dir() . '/dnsr_update_*') ?: [] as $old) {
-        if (is_dir($old) && filemtime($old) < time() - 3600) updateRemoveStage($old);
+    foreach (glob(tempDir() . '/dnsr_update_*') ?: [] as $old) {
+        if (is_dir($old) && filemtime($old) < time() - limit('update_stage_ttl')) updateRemoveStage($old);
     }
     $token = bin2hex(random_bytes(8));
     $dir = updateStageDir($token);
@@ -1468,13 +1460,13 @@ const GITHUB_REPO = 'korovkin37-stack/keenetic-dns-router';
 // The newest release and what changed since the installed version (the CHANGELOG.md of that tag).
 // The answer is kept for 6 hours, so opening the page does not ask GitHub every time.
 function doCheckGithubUpdate($in) {
-    $cacheFile = sys_get_temp_dir() . '/dns-router-github.json';
+    $cacheFile = tempDir() . '/dns-router-github.json';
     $cache = json_decode((string)@file_get_contents($cacheFile), true);
     // the notes come from CHANGELOG.<lang>.md when the release has one, otherwise from the English CHANGELOG.md
     $lang = preg_match('/^[a-z]{2,3}$/', (string)($in['lang'] ?? '')) ? (string)$in['lang'] : 'en';
-    if ($cache && empty($in['force']) && $cache['checked'] > time() - 6 * 3600 && $cache['current'] === APP_VERSION && $cache['lang'] === $lang) return $cache;
+    if ($cache && empty($in['force']) && $cache['checked'] > time() - limit('github_cache_hours') * 3600 && $cache['current'] === APP_VERSION && $cache['lang'] === $lang) return $cache;
 
-    $tmp = tempnam(listsTempDir(), 'krgh_');
+    $tmp = tempnam(tempDir(), 'krgh_');
     $error = listsDownload('https://api.github.com/repos/' . GITHUB_REPO . '/releases/latest', $tmp);
     $release = json_decode((string)file_get_contents($tmp), true);
     @unlink($tmp);
@@ -1495,7 +1487,7 @@ function doCheckGithubUpdate($in) {
     $notes = [];
     $newer = version_compare($latest, APP_VERSION, '>');
     if ($newer) {
-        $tmp = tempnam(sys_get_temp_dir(), 'krgh_');
+        $tmp = tempnam(tempDir(), 'krgh_');
         $raw = 'https://raw.githubusercontent.com/' . GITHUB_REPO . '/' . rawurlencode($tag) . '/';
         $found = $lang !== 'en' && listsDownload($raw . 'CHANGELOG.' . $lang . '.md', $tmp) === '';
         if ($found || listsDownload($raw . 'CHANGELOG.md', $tmp) === '') {
@@ -1525,7 +1517,7 @@ function doGithubDownloadUpdate() {
     if (!$check['newer']) return ['success' => false, 'error' => 'The release on GitHub is not newer than this version'];
     if ($check['asset'] === '') return ['success' => false, 'error' => 'The release has no dns-router.tar.gz'];
     if ($check['digest'] === '') return ['success' => false, 'error' => 'GitHub gave no checksum for the archive'];
-    $tmp = tempnam(listsTempDir(), 'krgh_');
+    $tmp = tempnam(tempDir(), 'krgh_');
     $error = listsDownload($check['asset'], $tmp);
     $raw = (string)file_get_contents($tmp);
     @unlink($tmp);
@@ -1549,7 +1541,7 @@ function updateInstallFiles($src, array $names) {
     }
     $cmd .= 'rm -rf ' . escapeshellarg("$b/prev") . '; mv ' . escapeshellarg("$b/new") . ' ' . escapeshellarg("$b/prev") . '; echo DNSR_OK';
     // other requests wait until the files and hooks are all of one version
-    $maintenance = sys_get_temp_dir() . '/dns-router-maintenance';
+    $maintenance = tempDir() . '/dns-router-maintenance';
     file_put_contents($maintenance, (string)time());
     $out = execPipelineAsRoot($cmd . ' 2>&1');
     if (strpos($out, 'DNSR_OK') === false) {
@@ -1625,18 +1617,60 @@ function listsSourceUrl(SQLite3 $db, $name) {
 }
 
 // Downloads $url into $file with curl. Returns '' on success, an error text otherwise.
+// The budgets of one download come from Settings, Timeouts and limits, Downloads: the connect has
+// its own, the transfer its own, and the retries together are capped so a web request (the catalog)
+// cannot outlive its time limit.
 function listsDownload($url, $file) {
     $curl = listsCurl();
     if ($curl === '') return 'curl is not installed: Service, System checks, "curl"';
-    $iface = (string)getSetting(getDb(), 'curl_interface');
-    $bind = $iface === '' ? '' : ' --interface ' . escapeshellarg($iface);
-    $maxFilesize = "100M";
-    // http(s) only, redirects only to https, at most 100 MB: /tmp on the router is RAM
-    $limits = ' --proto =http,https --proto-redir =https --max-filesize '.$maxFilesize;
-    exec(escapeshellarg($curl) . $bind . $limits . ' -fsSL --connect-timeout 10 -m 60 -o ' . escapeshellarg($file) . ' ' . escapeshellarg($url) . ' 2>&1', $out, $code);
-    if ($code === 63) return 'Download failed: the file is larger than '.$maxFilesize;
-    if ($code !== 0) return 'Download failed: 123' . trim(implode(' ', $out));
-    return '';
+    $iface = panelSetting('curl_interface');
+    // an interface that is gone (a tunnel deleted in Keenetic) would fail with an opaque curl code
+    if ($iface !== '' && !is_dir('/sys/class/net/' . $iface)) {
+        return 'Download failed: the interface ' . $iface . ' no longer exists (Settings, "Downloads through the interface")';
+    }
+    $host = (string)(parse_url($url, PHP_URL_HOST) ?: $url);
+
+    // -4: the whole panel works with IPv4 (A records, IPv4 routes), so the download does the same.
+    // It takes the IPv6 attempt out of the picture: a router that has an IPv6 route but no working
+    // IPv6 can spend part of the connect budget on it, and old curl builds have no happy eyeballs.
+    $args = [$curl, '-4', '-fsSL', '--noproxy', '*'];
+    if ($iface !== '') array_push($args, '--interface', $iface);
+    // http(s) only, redirects only to https, a size limit: the temp folder may still be RAM
+    array_push($args, '--proto', '=http,https', '--proto-redir', '=https', '--max-filesize', limit('dl_max_filesize') . 'M');
+    array_push($args,
+        '--connect-timeout', (string)limit('dl_connect_timeout'),
+        '--max-time', (string)limit('dl_max_time'),
+        // a transfer that stalled is cut instead of hanging until the max time; 0 turns the check off
+        '--speed-limit', (string)limit('dl_speed_limit'), '--speed-time', (string)limit('dl_speed_time'),
+        // a transient failure (timeout, refused, 5xx) is retried instead of failing the whole list
+        '--retry', (string)limit('dl_retries'), '--retry-delay', (string)limit('dl_retry_delay'),
+        '--retry-connrefused', '--retry-max-time', (string)limit('dl_retry_max_time'),
+        '-o', $file, $url);
+    exec(implode(' ', array_map('escapeshellarg', $args)) . ' 2>&1', $out, $code);
+    if ($code === 0) return '';
+
+    // Which way the download went: with a bound interface its state is the first thing to look at
+    $through = '';
+    if ($iface !== '') {
+        $state = trim((string)@file_get_contents('/sys/class/net/' . $iface . '/operstate'));
+        $through = ' through ' . $iface . ($state === 'down' ? ' (down)' : '');
+    }
+    // The wording is deliberately unlike curl's own English: the translator replaces known phrases
+    // inside a text, and short ones like "timed out" would also rewrite curl's message next to it.
+    $reason = [
+        6  => 'the name did not resolve',
+        7  => 'no connection' . $through,
+        22 => 'the server refused the request',
+        28 => 'no answer within the timeout' . $through,
+        35 => 'TLS handshake failed' . $through,
+        45 => 'could not bind to the interface ' . $iface,
+        60 => 'the certificate could not be verified (opkg install ca-bundle)',
+        63 => 'the file is larger than ' . limit('dl_max_filesize') . 'M',
+    ][$code] ?? ('curl exit code ' . $code . $through);
+    // curl prints the same line on every retry: one copy is enough
+    $why = trim((string)preg_replace('/\s+/', ' ', implode(' ', array_unique($out))));
+    // the reason and the detail are separated by a dash: the translator takes them apart one by one
+    return 'Download failed: ' . $reason . ' — ' . $host . ($why !== '' ? ': ' . $why : '');
 }
 
 // One request to the source: format=text returns one value per line.
@@ -1646,7 +1680,7 @@ function listsDataUrl($sourceUrl, $site, $data) {
 
 function listsFetchLines($sourceUrl, $site, $data, &$error) {
     $url = listsDataUrl($sourceUrl, $site, $data);
-    $tmp = tempnam(listsTempDir(), 'krlist_');
+    $tmp = tempnam(tempDir(), 'krlist_');
     $error = listsDownload($url, $tmp);
     $lines = [];
     $fh = $error === '' ? fopen($tmp, 'r') : false;
@@ -1764,16 +1798,14 @@ function listsApplyExclusions(array $items, $excl) {
     }));
 }
 
-// More domains take minutes of DNS: the rest are skipped and the list says so
-const LISTS_RESOLVE_LIMIT = 1000;
-
 // Addresses of the source's domains, resolved through the DNS servers set in Settings.
 // 'log' keeps, per domain, what came back and which server said it.
 function listsResolveDomains(SQLite3 $db, array $domains, $listId = 0, $token = null) {
     $servers = dnsServerList((string)getSetting($db, 'dns_servers'));
     $mode = getSetting($db, 'dns_mode') === 'all' ? 'all' : 'first';
     $targets = [];
-    foreach (array_slice($domains, 0, LISTS_RESOLVE_LIMIT) as $n => $domain) {
+    // more domains take minutes of DNS: the rest are skipped and the list says so
+    foreach (array_slice($domains, 0, limit('dns_resolve_limit')) as $n => $domain) {
         $targets[$n] = [$domain, $servers];
     }
     $ips = [];
@@ -1803,7 +1835,8 @@ function startBackground($arguments, $then = '') {
     // The log is named after the uid of the process that starts it ($(id -u), not getmyuid(), which is the owner of app.php):
     // a file left by root cannot be opened by the web user, and then the shell would not start the command at all.
     // setsid takes the process out of php-fpm's process group, so a restart of php-fpm does not kill it.
-    $log = '/opt/tmp/dns-router-lists-$(id -u).log';
+    // $(id -u) is left to the shell: the prefix is quoted, the uid is not
+    $log = escapeshellarg(tempDir() . '/dns-router-lists-') . '$(id -u).log';
     $detach = trim((string)shell_exec('command -v setsid 2>/dev/null')) !== '' ? 'setsid ' : '';
     exec('(' . $detach . $cmd . ' </dev/null >' . $log . ' 2>&1 & echo $!)', $out);
     return (int)($out[0] ?? 0);
@@ -1812,12 +1845,12 @@ function startBackground($arguments, $then = '') {
 // Progress of a running update lives in small files in the temp folder: the page polls it every 2 seconds
 // and must not queue behind the database.
 function jobRead($name) {
-    $text = @file_get_contents(sys_get_temp_dir() . '/dns-router-' . $name . '.json');
+    $text = @file_get_contents(tempDir() . '/dns-router-' . $name . '.json');
     return $text === false ? null : json_decode($text, true);
 }
 
 function jobWrite($name, $data) {
-    $file = sys_get_temp_dir() . '/dns-router-' . $name . '.json';
+    $file = tempDir() . '/dns-router-' . $name . '.json';
     if ($data === null) {
         if (!@unlink($file)) @file_put_contents($file, '');
         return;
@@ -1826,10 +1859,10 @@ function jobWrite($name, $data) {
     @chmod($file, 0666);
 }
 
-// The stage of the running update; a stage nobody has touched for 10 minutes belongs to a dead process.
+// The stage of the running update; a stage nobody has touched for too long belongs to a dead process.
 function listsCurrentStage() {
     $stage = jobRead('stage');
-    if ($stage && $stage['at'] < time() - 600) return null;
+    if ($stage && $stage['at'] < time() - limit('job_stage_stale')) return null;
     return $stage;
 }
 
@@ -1841,14 +1874,14 @@ function listsStage($id, $text, $site = '') {
 
 // The log of the last update: one line per event, shown by the page on demand.
 function jobLog($text) {
-    $file = sys_get_temp_dir() . '/dns-router-job.log';
+    $file = tempDir() . '/dns-router-job.log';
     file_put_contents($file, date('H:i:s') . ' ' . $text . "\n", FILE_APPEND | LOCK_EX);
     @chmod($file, 0666);
 }
 
 function listsIsWorking($status) {
     if (strpos((string)$status, 'working:') !== 0) return false;
-    return (int)substr($status, 8) > time() - 1800;
+    return (int)substr($status, 8) > time() - limit('job_working_stale');
 }
 
 // A list that is being updated holds 'working:<time>' as its status. When the user cancels, the status is
@@ -1938,7 +1971,7 @@ function listsSetStatus(SQLite3 $db, $id, $status, $now) {
 // 'networks' mode takes the source's CIDRs and addresses as they are; 'resolve' mode resolves the source's domains; 'both' does both and merges the results.
 // A result that lost more than half of the entries is held back unless $force is set.
 function doSyncList(SQLite3 $db, $id, $force = false) {
-    ini_set('memory_limit', '192M');
+    ini_set('memory_limit', limit('job_memory_mb') . 'M');
     $list = $db->querySingle('SELECT * FROM lists WHERE id = ' . (int)$id, true);
     if (!$list) fail('List not found', 404);
 
@@ -2046,7 +2079,8 @@ function doSyncList(SQLite3 $db, $id, $force = false) {
 
     if (listsAborted($db, $id, $token)) return ['success' => false, 'error' => 'cancelled', 'cancelled' => true];
     $status = 'ok';
-    if (!$force && $old && count($removed) * 2 > count($old)) {
+    $guard = limit('list_shrink_guard');
+    if (!$force && $old && $guard > 0 && count($removed) * 100 > count($old) * $guard) {
         $status = 'held: ' . count($removed) . ' of ' . count($old) . ' entries disappeared';
         listsSetStatus($db, $id, $status, $now);
         return ['success' => true, 'held' => true, 'status' => $status];
@@ -2112,13 +2146,13 @@ function doGetListDetail(SQLite3 $db, $id) {
 
 // The catalog is the source's full JSON: only "name" and "group" of every site are cut out of it, chunk by chunk.
 function doGetListsCatalog(SQLite3 $db, $refresh, $sourceName = '') {
-    ini_set('memory_limit', '128M');
-    set_time_limit(300); // 5 минут на выполнение
+    ini_set('memory_limit', limit('web_memory_mb') . 'M');
+    set_time_limit(limit('job_time_limit'));
     $cacheKey = 'lists_catalog_' . preg_replace('/\W/', '_', $sourceName);
     $cached = getSetting($db, $cacheKey);
     if ($cached && !$refresh) return ['sites' => json_decode($cached, true), 'cached' => true];
 
-    $tmp = tempnam(listsTempDir(), 'krcat_');
+    $tmp = tempnam(tempDir(), 'krcat_');
     $error = listsDownload(listsSourceUrl($db, $sourceName) . '/?format=json', $tmp);
     if ($error !== '') {
         @unlink($tmp);
@@ -2148,7 +2182,6 @@ function doGetListsCatalog(SQLite3 $db, $refresh, $sourceName = '') {
 // ---- Own lists: a text pasted in the panel or a file by a link, one entry per line.
 // Every line is recognized by itself: a domain, an IP, a network. Understood besides plain lines:
 // comments (#, ;, !), hosts files (0.0.0.0 example.com), adblock (||example.com^), v2fly (domain:, full:), "*.example.com", links.
-const CUSTOM_LIST_MAX_LINES = 100000;
 
 function listsParseCustom($text) {
     $domains = [];
@@ -2161,7 +2194,8 @@ function listsParseCustom($text) {
         if (count($skipped) < 30) $skipped[] = [textCut($line, 80), $why];
     };
     $lines = preg_split('/\r\n|\r|\n/', preg_replace('/^\xEF\xBB\xBF/', '', (string)$text));
-    if (count($lines) > CUSTOM_LIST_MAX_LINES) $lines = array_slice($lines, 0, CUSTOM_LIST_MAX_LINES);
+    $maxLines = limit('list_max_lines');
+    if (count($lines) > $maxLines) $lines = array_slice($lines, 0, $maxLines);
     foreach ($lines as $raw) {
         $line = trim($raw);
         if ($line === '' || $line[0] === '#' || $line[0] === ';' || $line[0] === '!' || $line[0] === '[') continue;
@@ -2198,7 +2232,7 @@ function textCut($s, $width) {
 // The text of an own list: downloaded when it is a link. Returns [text, error].
 function listsCustomText($url, $text) {
     if ($url === '') return [(string)$text, ''];
-    $tmp = tempnam(listsTempDir(), 'krlist_');
+    $tmp = tempnam(tempDir(), 'krlist_');
     $error = listsDownload($url, $tmp);
     $body = $error === '' ? (string)file_get_contents($tmp) : '';
     @unlink($tmp);
@@ -2214,7 +2248,8 @@ function readCustomSource(array $in) {
         return ['url' => $url, 'text' => ''];
     }
     if (trim($text) === '') fail('Paste the list or give a link to it');
-    if (strlen($text) > 4 * 1024 * 1024) fail('At most 4 MB of text');
+    $maxMb = limit('list_max_text_mb');
+    if (strlen($text) > $maxMb * 1024 * 1024) fail("At most $maxMb MB of text");
     return ['url' => '', 'text' => $text];
 }
 
@@ -2332,8 +2367,8 @@ function doDeleteList(SQLite3 $db, $in) {
 
 // One list, or all enabled ones; the routes are applied once at the end.
 function doSyncLists(SQLite3 $db, $in) {
-    ini_set('memory_limit', '128M');
-    set_time_limit(300); // также увеличьте таймаут выполнения до 5 минут
+    ini_set('memory_limit', limit('web_memory_mb') . 'M');
+    set_time_limit(limit('job_time_limit'));
     $id = (int)($in['id'] ?? 0);
     $ids = $id ? [$id] : array_column(rows($db, 'SELECT id FROM lists WHERE enabled = 1'), 'id');
     if (!$ids) return ['success' => true, 'working' => false, 'count' => 0];
@@ -2357,11 +2392,9 @@ function jobSet(array $fields) {
     jobWrite('job', array_merge(jobRead('job'), $fields));
 }
 
-const JOB_HISTORY_MAX = 20;
-const JOB_QUEUE_MAX = 6;
 
 function jobLock() {
-    $file = sys_get_temp_dir() . '/dns-router-jobq.lock';
+    $file = tempDir() . '/dns-router-jobq.lock';
     $handle = fopen($file, 'c');
     @chmod($file, 0666);
     flock($handle, LOCK_EX);
@@ -2372,14 +2405,14 @@ function jobAlive($job) {
     if (!$job || $job['state'] !== 'running') return false;
     $pid = (int)(jobRead('jobpid')['pid'] ?? 0);
     // no pid yet: the process is being started; after a minute without one it never came up
-    if ($pid === 0) return $job['started'] > time() - 60;
+    if ($pid === 0) return $job['started'] > time() - limit('job_start_grace');
     return is_dir('/proc/' . $pid);
 }
 
 // Finished jobs are kept (newest first) with the tail of their log: the task manager shows them
 function jobArchive($job) {
     if (empty($job['id'])) return;
-    $file = sys_get_temp_dir() . '/dns-router-jobhist.json';
+    $file = tempDir() . '/dns-router-jobhist.json';
     $handle = fopen($file, 'c+');
     @chmod($file, 0666);
     flock($handle, LOCK_EX);
@@ -2390,7 +2423,7 @@ function jobArchive($job) {
             return;
         }
     }
-    $lines = @file(sys_get_temp_dir() . '/dns-router-job.log', FILE_IGNORE_NEW_LINES) ?: [];
+    $lines = @file(tempDir() . '/dns-router-job.log', FILE_IGNORE_NEW_LINES) ?: [];
     $keep = ['id', 'kind', 'source', 'events', 'state', 'started', 'finished', 'steps', 'step', 'total', 'done', 'failed', 'held', 'targets_changed', 'target_errors', 'routes', 'route_errors', 'route_error', 'rule_error', 'error'];
     $entry = array_intersect_key($job, array_flip($keep));
     $entry['finished'] = $job['finished'] ?? time();
@@ -2399,7 +2432,7 @@ function jobArchive($job) {
     array_unshift($history, $entry);
     ftruncate($handle, 0);
     rewind($handle);
-    fwrite($handle, json_encode(array_slice($history, 0, JOB_HISTORY_MAX)));
+    fwrite($handle, json_encode(array_slice($history, 0, limit('job_history'))));
     fclose($handle);
 }
 
@@ -2469,9 +2502,13 @@ function jobStepsFor(SQLite3 $db, $kind, array $params = []) {
     }
     if ($kind !== 'event') return JOB_STEPS[$kind];
     $steps = [];
+    // how often the hooks may refresh: Settings, Timeouts and limits, Hooks (0: every time).
+    // limit() gives a whole number of minutes, so nothing user-supplied reaches the query.
+    $targetsMin = limit('hook_targets_min');
+    $listsMin = limit('hook_lists_min');
     $targetsDue = $db->querySingle("SELECT COUNT(*) FROM domains WHERE enabled = 1") > 0
-        && !$db->querySingle("SELECT COUNT(*) FROM domains WHERE enabled = 1 AND last_check > datetime('now', '-5 minutes')");
-    $listsDue = $db->querySingle("SELECT COUNT(*) FROM lists WHERE enabled = 1 AND (last_sync IS NULL OR last_sync = '' OR last_sync < datetime('now', '-1 hour'))") > 0;
+        && !$db->querySingle("SELECT COUNT(*) FROM domains WHERE enabled = 1 AND last_check > datetime('now', '-$targetsMin minutes')");
+    $listsDue = $db->querySingle("SELECT COUNT(*) FROM lists WHERE enabled = 1 AND (last_sync IS NULL OR last_sync = '' OR last_sync < datetime('now', '-$listsMin minutes'))") > 0;
     if ($targetsDue) $steps[] = 'targets';
     if ($listsDue) $steps[] = 'lists';
     $steps[] = 'apply';
@@ -2503,7 +2540,7 @@ function jobPrepare(SQLite3 $db, $kind, $source, array $params = []) {
         }
     }
     if ($kind !== 'sync') listsMarkWorking($db, $ids);
-    $logFile = sys_get_temp_dir() . '/dns-router-job.log';
+    $logFile = tempDir() . '/dns-router-job.log';
     if (!@unlink($logFile)) @file_put_contents($logFile, '');
     jobWrite('stage', null);
     jobWrite('jobpid', ['pid' => 0]);
@@ -2574,7 +2611,7 @@ function doStartJob(SQLite3 $db, $in, $source = 'panel') {
             fclose($lock);
             return ['success' => true, 'already' => true];
         }
-        if (count($queue) >= JOB_QUEUE_MAX) {
+        if (count($queue) >= limit('job_queue')) {
             fclose($lock);
             fail('The queue is full');
         }
@@ -2604,13 +2641,13 @@ function doGetJob() {
     $job['stage'] = $stage ? $stage['text'] : '';
     $job['site'] = $stage && $stage['id'] ? $job['sites'][$stage['id']] : '';
     if ($job['step'] === 'apply' || $job['state'] === 'done') $job['done'] = $job['total'];
-    $log = @file_get_contents(sys_get_temp_dir() . '/dns-router-job.log');
+    $log = @file_get_contents(tempDir() . '/dns-router-job.log');
     $job['log'] = $log === false ? '' : $log;
     return ['job' => $job, 'queue' => $queue];
 }
 
 function jobHistory() {
-    return json_decode((string)@file_get_contents(sys_get_temp_dir() . '/dns-router-jobhist.json'), true) ?: [];
+    return json_decode((string)@file_get_contents(tempDir() . '/dns-router-jobhist.json'), true) ?: [];
 }
 
 function doGetJobHistory() {
@@ -2627,7 +2664,7 @@ function doGetJobLog($id) {
 }
 
 function doClearJobHistory() {
-    @file_put_contents(sys_get_temp_dir() . '/dns-router-jobhist.json', '[]');
+    @file_put_contents(tempDir() . '/dns-router-jobhist.json', '[]');
     return ['success' => true];
 }
 
@@ -2677,7 +2714,7 @@ function jobAfterExit($db, $id) {
 
 // The body of "app.php job <kind> <ids>".
 function jobRun(SQLite3 $db, $kind, array $ids) {
-    ini_set('memory_limit', '192M');
+    ini_set('memory_limit', limit('job_memory_mb') . 'M');
     $myId = (string)(jobRead('job')['id'] ?? '');
     jobWrite('jobpid', ['pid' => getmypid()]);
     register_shutdown_function(function () use ($db, $ids, $myId) {
@@ -2816,7 +2853,7 @@ function rciApply(array $commands, $in) {
     global $rci_host;
     $commands[] = ['system' => ['configuration' => ['save' => new stdClass()]]];
     if (!empty($in['dry_run'])) return ['success' => true, 'dry_run' => true, 'sent' => $commands];
-    $ctx = stream_context_create(['http' => ['method' => 'POST', 'header' => "Content-Type: application/json\r\n", 'content' => json_encode($commands), 'timeout' => 30, 'ignore_errors' => true]]);
+    $ctx = stream_context_create(['http' => ['method' => 'POST', 'header' => "Content-Type: application/json\r\n", 'content' => json_encode($commands), 'timeout' => limit('rci_post_timeout'), 'ignore_errors' => true]]);
     $raw = @file_get_contents(rtrim($rci_host, '/') . '/rci/', false, $ctx);
     if ($raw === false) return ['success' => false, 'error' => 'Could not reach Keenetic RCI', 'sent' => $commands];
     $errors = rciErrors(json_decode($raw, true));
@@ -3370,8 +3407,8 @@ function quicProbeMany(array $jobs) {
         foreach ($open as $key => &$job) {
             $data = $sockets ? @socket_read($job['sock'], 2048) : @fread($job['sock'], 2048);
             $answer = $data ? quicReadAnswer($data, $job['dcid']) : null;
-            if (!$answer && $now - $job['start'] > 3) $answer = ['class' => 'to', 'code' => 'TIMEOUT', 'note' => 'No answer over UDP 443'];
-            if (!$answer && !$job['resent'] && $now - $job['start'] > 1) {
+            if (!$answer && $now - $job['start'] > limit('dpi_quic_wait')) $answer = ['class' => 'to', 'code' => 'TIMEOUT', 'note' => 'No answer over UDP 443'];
+            if (!$answer && !$job['resent'] && $now - $job['start'] > limit('dpi_quic_retry')) {
                 $sockets ? @socket_write($job['sock'], $job['packet']) : @fwrite($job['sock'], $job['packet']);
                 $job['resent'] = true;
             }
@@ -3576,7 +3613,7 @@ function doSaveDpiLists(SQLite3 $db, $in) {
 function dpiState() {
     $state = jobRead('dpi');
     if (!$state || $state['state'] !== 'running') return $state;
-    $dead = $state['pid'] > 0 ? !is_dir('/proc/' . $state['pid']) : $state['started'] < time() - 30;
+    $dead = $state['pid'] > 0 ? !is_dir('/proc/' . $state['pid']) : $state['started'] < time() - limit('diag_run_grace');
     if ($dead) {
         $state['state'] = 'error';
         $state['error'] = 'The check process stopped unexpectedly';
@@ -3834,7 +3871,7 @@ function dpiCurl($iface, $timeout) {
 }
 
 function dpiCurlOptions($iface, $timeout) {
-    $options = ['-sSv', '--noproxy', '*', '--connect-timeout', '8', '-m', (string)$timeout, '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', '-w', '%{json}\n'];
+    $options = ['-sSv', '--noproxy', '*', '--connect-timeout', (string)limit('dpi_connect_timeout'), '-m', (string)$timeout, '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', '-w', '%{json}\n'];
     if ($iface !== '') array_push($options, '--interface', $iface);
     return $options;
 }
@@ -3929,7 +3966,7 @@ function dnsSkipName($data, $pos) {
 function dpiDnsUdp($server, $name) {
     $sock = @stream_socket_client('udp://' . $server . ':53', $errno, $error, 3);
     if (!$sock) return 'ERR';
-    stream_set_timeout($sock, 3);
+    stream_set_timeout($sock, limit('dpi_dns_udp'));
     fwrite($sock, dnsQueryPacket($name, random_int(1, 65535)));
     $data = fread($sock, 1500);
     fclose($sock);
@@ -3942,7 +3979,7 @@ function dpiDnsDot($server, $peer, $name) {
     $ctx = stream_context_create(['ssl' => ['peer_name' => $peer, 'verify_peer' => true]]);
     $sock = @stream_socket_client('tls://' . $server . ':853', $errno, $error, 5, STREAM_CLIENT_CONNECT, $ctx);
     if (!$sock) return stripos($error, 'reset') !== false ? 'RST' : 'TIMEOUT';
-    stream_set_timeout($sock, 5);
+    stream_set_timeout($sock, limit('dpi_dns_tcp'));
     $packet = dnsQueryPacket($name, random_int(1, 65535));
     fwrite($sock, pack('n', strlen($packet)) . $packet);
     $len = fread($sock, 2);
@@ -3957,13 +3994,13 @@ function dpiDnsDohMany(array $names, $iface) {
     $commands = [];
     $files = [];
     foreach ($names as $name) {
-        $files[$name] = tempnam(sys_get_temp_dir(), 'krdoh_');
-        $cmd = dpiCurl($iface, 8);
+        $files[$name] = tempnam(tempDir(), 'krdoh_');
+        $cmd = dpiCurl($iface, limit('dpi_http_timeout'));
         array_push($cmd, '-H', 'accept: application/dns-json', '-o', $files[$name], 'https://cloudflare-dns.com/dns-query?type=A&name=' . rawurlencode($name));
         $commands[$name] = $cmd;
     }
     $out = [];
-    foreach (dpiCurlMany($commands, 8) as $name => $r) {
+    foreach (dpiCurlMany($commands, limit('dpi_parallel')) as $name => $r) {
         $body = json_decode((string)file_get_contents($files[$name]), true);
         @unlink($files[$name]);
         if ($r['code'] !== 0 || !is_array($body)) {
@@ -4119,7 +4156,7 @@ function dpiTestDomains(array $domains, array $ifaces, callable $partial) {
         if ($row['ip'] === '') continue;
         foreach ($ifaces as $key => $iface) {
             foreach ($kinds as $kind => [$port, $scheme, $extra]) {
-                $cmd = array_merge(dpiCurl($iface, 10), $extra, ['-I', '-o', '/dev/null', '--resolve', "$domain:$port:{$row['ip']}", "$scheme://$domain/"]);
+                $cmd = array_merge(dpiCurl($iface, limit('dpi_head_timeout')), $extra, ['-I', '-o', '/dev/null', '--resolve', "$domain:$port:{$row['ip']}", "$scheme://$domain/"]);
                 $commands["$domain|$key|$kind"] = $cmd;
             }
         }
@@ -4128,7 +4165,7 @@ function dpiTestDomains(array $domains, array $ifaces, callable $partial) {
     dpiProgress(['stage' => 'HTTP / TLS', 'done' => 0, 'total' => count($commands)]);
     foreach (array_chunk($commands, 24, true) as $chunk) {
         if (dpiCancelled()) break;
-        $results = dpiCurlMany($chunk, 8, function () use (&$done) {
+        $results = dpiCurlMany($chunk, limit('dpi_parallel'), function () use (&$done) {
             $done++;
             if ($done % 4 === 0) dpiProgress(['done' => $done]);
         });
@@ -4154,13 +4191,13 @@ function dpiCertDetails(array &$rows, array $ifaces, array $kinds) {
             foreach ($cells as $kind => $cell) {
                 if ($cell['code'] !== 'CERT') continue;
                 [$port, $scheme, $extra] = $kinds[$kind];
-                $commands["$domain|$key|$kind"] = array_merge(dpiCurl($ifaces[$key], 10), $extra, ['-k', '-I', '-o', '/dev/null', '--resolve', "$domain:$port:{$row['ip']}", "$scheme://$domain/"]);
+                $commands["$domain|$key|$kind"] = array_merge(dpiCurl($ifaces[$key], limit('dpi_head_timeout')), $extra, ['-k', '-I', '-o', '/dev/null', '--resolve', "$domain:$port:{$row['ip']}", "$scheme://$domain/"]);
             }
         }
     }
     if (!$commands) return;
     dpiProgress(['stage' => 'Certificates']);
-    foreach (dpiCurlMany($commands, 8) as $k => $r) {
+    foreach (dpiCurlMany($commands, limit('dpi_parallel')) as $k => $r) {
         [$domain, $key, $kind] = explode('|', $k);
         $info = dpiCertInfo($r);
         if (!$info) continue;
@@ -4293,24 +4330,27 @@ function dpiTcpUrl($host, $port) {
     return in_array($port, [80, 443], true) ? "$scheme://$host/" : "$scheme://$host:$port/";
 }
 
-// One plain request before the test: its time gives the read timeout of the test, 3 x that time, from 1.5 to 12 s
+// One plain request before the test: its time gives the read timeout of the test, a factor of that
+// time between two bounds. All three numbers are in Settings, Timeouts and limits, DPI check.
 function dpiTcpProbe($iface, $ip, $port, $host) {
-    return array_merge(dpiCurl($iface, 12), ['-k', '--resolve', "$host:$port:$ip", '-o', '/dev/null', dpiTcpUrl($host, $port)]);
+    return array_merge(dpiCurl($iface, limit('dpi_probe_timeout')), ['-k', '--resolve', "$host:$port:$ip", '-o', '/dev/null', dpiTcpUrl($host, $port)]);
 }
 
 function dpiTcpTimeout(array $probe) {
-    $time = (float)($probe['transfers'][0]['time_total'] ?? 12);
-    return round(min(max($time * 3, 1.5), 12), 1);
+    $max = limit('dpi_read_max');
+    $time = (float)($probe['transfers'][0]['time_total'] ?? $max);
+    return round(min(max($time * limit('dpi_read_factor'), limit('dpi_read_min')), $max), 1);
 }
 
 // A keep-alive connection with requests padded to ~4 KB each: the filter freezes it after 16-20 KB.
-// Every request is its own --next part, so the first two wait 12 s and the rest only $timeout; curl keeps the connection between the parts.
+// Every request is its own --next part, so the first two wait the probe timeout and the rest only
+// $timeout; curl keeps the connection between the parts.
 function dpiTcpCommand($iface, $ip, $port, $host, $pad, $timeout) {
     $cmd = [listsCurl(), '--fail-early'];
     if (dpiCurlHasRate()) array_push($cmd, '--rate', '20/s');
     for ($i = 0; $i < DPI_TCP_STEPS; $i++) {
         if ($i > 0) $cmd[] = '--next';
-        $cmd = array_merge($cmd, dpiCurlOptions($iface, $i < 2 ? 12 : $timeout), ['-k', '--resolve', "$host:$port:$ip", '-H', 'X-Pad: ' . $pad, '-o', '/dev/null', dpiTcpUrl($host, $port)]);
+        $cmd = array_merge($cmd, dpiCurlOptions($iface, $i < 2 ? limit('dpi_probe_timeout') : $timeout), ['-k', '--resolve', "$host:$port:$ip", '-H', 'X-Pad: ' . $pad, '-o', '/dev/null', dpiTcpUrl($host, $port)]);
     }
     return $cmd;
 }
@@ -4368,7 +4408,7 @@ function dpiTestTcp(array $ifaces, array $targets, $defaultSni, callable $partia
         if (dpiCancelled()) break;
         $commands = [];
         foreach ($chunk as $k => [$iface, $ip, $port, $host]) $commands[$k] = dpiTcpProbe($iface, $ip, $port, $host);
-        $probes += dpiCurlMany($commands, 10, $tick);
+        $probes += dpiCurlMany($commands, limit('dpi_parallel'), $tick);
     }
 
     // a hosting that did not answer the plain request is not tested further
@@ -4399,7 +4439,7 @@ function dpiTestTcp(array $ifaces, array $targets, $defaultSni, callable $partia
     $partial($build());
     foreach (array_chunk($commands, 20, true) as $chunk) {
         if (dpiCancelled()) break;
-        foreach (dpiCurlMany($chunk, 10, $tick) as $k => $r) {
+        foreach (dpiCurlMany($chunk, limit('dpi_parallel'), $tick) as $k => $r) {
             $results[$k] = dpiTcpResult($r) + ['timeout' => $timeouts[$k]];
         }
         $partial($build());
@@ -4431,11 +4471,11 @@ function dpiTestSni(array $tcp, array $ifaces, array $names, callable $partial) 
     foreach ($groups as &$group) {
         dpiProgress(['stage' => $group['provider']]);
         $group['active'] = true;
-        foreach (array_chunk($names, 8) as $batch) {
+        foreach (array_chunk($names, limit('dpi_parallel')) as $batch) {
             if (dpiCancelled()) break 2;
             $commands = [];
             foreach ($batch as $sni) $commands[$sni] = dpiTcpCommand($ifaces[$key], $group['ip'], 443, $sni, $pad, $group['timeout']);
-            foreach (dpiCurlMany($commands, 8) as $sni => $r) {
+            foreach (dpiCurlMany($commands, limit('dpi_parallel')) as $sni => $r) {
                 $result = dpiTcpResult($r);
                 $group['results'][] = ['sni' => (string)$sni, 'verdict' => $result['verdict'], 'kb' => $result['kb'], 'note' => $result['note']];
             }
@@ -4454,12 +4494,12 @@ function dpiTestTelegram(array $ifaces, array $dcs) {
     $commands = [];
     foreach ($ifaces as $key => $iface) {
         foreach ($dcs as [$name, $ip]) {
-            $commands["$name|$key"] = array_merge(dpiCurl($iface, 6), ['-o', '/dev/null', "http://$ip:443/"]);
+            $commands["$name|$key"] = array_merge(dpiCurl($iface, limit('dpi_plain_timeout')), ['-o', '/dev/null', "http://$ip:443/"]);
         }
-        $commands["file|$key"] = array_merge(dpiCurl($iface, 25), ['-o', '/dev/null', '-r', '0-4999999', 'https://telegram.org/img/Telegram200million.png']);
+        $commands["file|$key"] = array_merge(dpiCurl($iface, limit('dpi_file_timeout')), ['-o', '/dev/null', '-r', '0-4999999', 'https://telegram.org/img/Telegram200million.png']);
     }
     dpiProgress(['stage' => 'Telegram', 'done' => 0, 'total' => count($commands)]);
-    $results = dpiCurlMany($commands, 6);
+    $results = dpiCurlMany($commands, limit('dpi_parallel'));
     $rows = [];
     foreach ($dcs as [$name, $ip]) {
         $row = ['name' => $name, 'ip' => $ip, 'res' => []];
@@ -4508,7 +4548,7 @@ function dpiSummary(array $run) {
 
 // The body of "app.php dpi" (root)
 function dpiRun(SQLite3 $db) {
-    ini_set('memory_limit', '64M');
+    ini_set('memory_limit', limit('dpi_memory_mb') . 'M');
     set_time_limit(0);
     $state = jobRead('dpi');
     if (!$state || $state['state'] !== 'running') return;

@@ -1,78 +1,173 @@
 # Keenetic DNS Router
 
-**English** · [Русский](README.ru.md)
+A self-hosted panel for a Keenetic router that routes chosen domains, IP lists and whole
+services through the policy you pick — a VPN tunnel, a second provider, or a BGP feed.
 
-A web panel for Keenetic routers with Entware. It routes chosen domains, IP addresses and whole IP lists through Keenetic policies (fwmark plus its own routing tables), keeps the addresses up to date by itself, manages BGP (bird4) and shows what the provider blocks. PHP + SQLite on the router, no cron. The interface is in English and Russian.
+The panel keeps its targets in SQLite, resolves them through the DNS servers you choose,
+downloads IP lists from a source such as [iplist.opencck.org](https://iplist.opencck.org),
+and writes the routes into the policy tables of the router with `ip rule` / `ip route`.
+It runs on the router itself under Entware: PHP + nginx, no cloud, no build step.
 
-## Features
+**Version 5.45.6** · [Changelog](CHANGELOG.md) · [Изменения по-русски](CHANGELOG.ru.md)
 
-- **Targets**: domains, IPs and CIDRs bound to Keenetic policies. Domains are resolved through the DNS you choose (the router's DoH proxy or your own servers); routes go into the panel's tables `400+` with `fwmark` rules of the policy. Many targets can be edited at once (exit, policy, backup exit, on/off, delete).
-- **Lists**: ready sets of addresses and domains of sites (YouTube, Telegram, …) from [iplist.opencck.org](https://iplist.opencck.org), with subnet aggregation and a guard against "half of the list suddenly vanished". Own lists too: pasted text or a link to a file, each line recognized by itself (domain, IP, network; hosts and adblock formats are understood).
-- **Backup exit**: a target or a list gets a second interface or gateway; while the main exit fails its connectivity check or is not connected, the routes go to the backup and come back by themselves. A gateway is matched to its interface by the subnet.
-- **Connectivity checks**: the Keenetic ping-check of an interface (ICMP, TCP port, TLS, automatic) set up from the panel, "only watch" or "turn the interface off", with a window of all checks and their state.
-- **Tables and database**: the panel compares the routing tables of the router with the database and shows every difference; applying writes only what differs.
-- **Task dispatcher** without cron: ndm hooks (firewall rebuilt, interface state changed) only queue a task; the dispatcher decides what is due and applies the routes. Edits in the panel never block the interface.
-- **BGP (bird4)**: a `bird4.conf` wizard, a hook that starts bird together with the tunnel, the rule for the BGP table and a route to the neighbor through the tunnel.
-- **Clients**: devices and their connections, client registration and policy through RCI.
-- **Tables and interfaces**: routing tables, Keenetic static routes, turning interfaces on and off and their descriptions through RCI (with a preview of the request).
-- **Diagnostics**:
-  - DPI check: DNS spoofing, blocking by SNI (HTTP / TLS 1.2 / TLS 1.3 / QUIC), connections frozen after 16–20 KB on foreign hostings, a search for "white" SNI names, Telegram reachability; through the provider and through the tunnel side by side;
-  - Test Route: where an address goes under a policy mark, plus a real curl request through that interface with any SNI.
-- **Updates**: from GitHub releases or from an uploaded archive, with checks and rollback.
+---
+
+## What it does
+
+| Tab | Purpose |
+|---|---|
+| **Targets** | Domains, IPs and networks, each with its policy and exit (interface and gateway). Resolved on a schedule, grouped by policy, bulk editing, backup exit. |
+| **Policies** | Keenetic policies with their fwmark and routing table, live traffic and route counts. |
+| **Lists** | IP/domain lists from a source, a catalog of services, and your own lists from pasted text or a link. Subnets are aggregated, a list that lost half its entries is held back. |
+| **Clients** | Devices from the router, their policy, live connections, registration. |
+| **Interfaces** | Router interfaces, addresses, statistics, WireGuard peers, Keenetic connectivity checks (ping-check). |
+| **Routing tables** | Live kernel tables and rules, the router's own static routes, and the routing order. |
+| **Diagnostics** | DPI check after [dpi-detector](https://github.com/Runnin4ik/dpi-detector): spoofed DNS, TLS reset by SNI, the 16–20 KB cut, QUIC, white SNI, Telegram data centres. |
+| **Tools** | Test route (a real `curl` through the interface of a route), bird4/BGP with a config wizard, ndm hooks, system checks. |
+| **Settings** | DNS for lookups, downloads through an interface, task pause, panel update from GitHub. |
+
+Routes are applied without a gap: new routes are written over the old ones and only then
+are the stale ones removed, so traffic keeps its route the whole time. When nothing
+changed, nothing is written and no root call is made.
+
+Long work (resolving, downloading, applying) runs as a background task on the router with
+a queue and a log — the page can be closed. ndm hooks re-apply the routes when the
+firewall is rebuilt or an interface changes.
 
 ## Requirements
 
-- A Keenetic router with Entware and the "OPKG packages" component;
-- nginx, PHP 8 (`php8-fpm`, `php8-cli`, the `sqlite3` module), `ip-full`: the installer puts them in;
-- optional: `curl` (lists, DPI check, updates), PHP modules `openssl` and `sockets` (DoT and QUIC in the DPI check), `bird1-ipv4` (BGP). The panel shows what is missing in Service → System checks and can install it.
+* Keenetic with the **OPKG packages** component enabled, and Entware installed on a drive.
+* nginx + `php-fpm` and `php-cli`, **PHP 8.1 or newer** (`array_is_list()` is used), with `php-mod-sqlite3`.
+* `ip-full` (the busybox `ip` cannot do `route get ... mark`), `curl`, `ca-bundle`.
+* Optional: `php-mod-openssl` and `php-mod-sockets` for the DoT and QUIC columns of the DPI
+  check, `bird1-ipv4` for BGP.
+* The admin password of the Keenetic web UI — it is used for `su` to run `ip rule`/`ip route`.
+
+The panel checks all of this itself: **Tools → System checks**, or `app.php checks` from
+the shell. Every failed check comes with the command that fixes it.
 
 ## Install
 
-As root on the router:
+Put the panel files in a directory served by nginx (for example `/opt/www/dns-router`),
+then as root:
 
 ```sh
-mkdir -p /opt/tmp && cd /opt/tmp
-curl -fsSLO https://github.com/korovkin37-stack/keenetic-dns-router/releases/latest/download/install.sh
-sh install.sh
+DNSR_ROUTER_PASS='keentic-admin-password' \
+DNSR_PANEL_PASS='panel-password' \
+DNSR_WEB_USER=nobody \
+/opt/bin/php-cli /opt/www/dns-router/app.php install
 ```
 
-The installer asks for the router admin password (needed for `su`) and a panel password, downloads the latest release (`dns-router.tar.gz`), installs the packages, sets up nginx and php-fpm, creates the config and the database in `/opt/etc/dns-router/` and the ndm hooks. At the end it prints the panel address, by default `http://router-ip:880/`.
+| Variable | Meaning | Default |
+|---|---|---|
+| `DNSR_ROUTER_PASS` | Keenetic admin password, used for `su` | required |
+| `DNSR_PANEL_PASS` | Password for the panel itself (4+ characters) | required |
+| `DNSR_PANEL_USER` | Panel login | `admin` |
+| `DNSR_WEB_USER` | User that nginx/php-fpm runs as | `nobody` |
+| `DNSR_CONF_DIR` | Where `config.php` and the database live | `/opt/etc/dns-router` |
+| `DNSR_RCI` | Local Keenetic RCI address | `http://127.0.0.1:79` |
 
-No `curl` on the router: `opkg update && opkg install curl ca-bundle`. Without internet on the router: put `install.sh` and `dns-router.tar.gz` from the [release](https://github.com/korovkin37-stack/keenetic-dns-router/releases/latest) into one folder and run `sh install.sh`.
+The installer writes `config.php`, creates the database, installs the ndm hooks and fixes
+the ownership so the web user can write. It keeps an existing config and database.
 
-Installer variables: `PORT=8081` (panel port), `RCI=http://127.0.0.1:79` (RCI address), `WITH_BIRD=1` (install bird), `MANUAL=1` (leave nginx, php and packages alone), `WWW=/path` (panel folder), `RELEASE_URL=…` (where to download the archive from).
+Alternatively open the panel in a browser and follow the two-step setup wizard: it shows
+the system checks, asks for the router access and the panel login, then creates the database.
 
-## Update
+`config.php` is looked up in this order: `$DNSR_CONFIG`, `/opt/etc/dns-router/config.php`,
+`config.php` next to `app.php`. See [config.example.php](config.example.php).
 
-- **From the panel**: Settings → Panel update. "Check for updates" asks GitHub for a new release and shows what changed; "Download and check" fetches the archive (through the interface set for list downloads). You can also drop `dns-router.tar.gz` from a release by hand. Either way the panel checks the archive, lists the changed files and keeps the previous version for rollback. The version badge in the corner lights up when a new release is out.
-- **With the installer**: running `sh install.sh` again updates the files and the hooks without asking for passwords. Needed when packages, nginx or php change.
+### nginx
 
-## Security
+Serve the panel directory over HTTPS if it is reachable from outside the LAN. `app.php`
+sends `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY` itself, and the page
+carries a Content-Security-Policy that forbids foreign scripts.
 
-- `config.php` keeps the router admin password in plain text (the panel runs `ip route/rule` as root through `su`). It lives outside the web folder and is readable by the php-fpm user only. Never publish it or `routes.db`.
-- The panel is meant for the local network. Do not open its port to the internet.
+The installer does **not** touch your nginx configuration. Make sure `config.php` (it holds
+the router password) and the database are not served — keep them outside the web directory
+(the default `/opt/etc/dns-router` already is), or deny them explicitly:
 
-## CLI
+```nginx
+location ~ /(config\.php|routes\.db|dpi/.*) { deny all; }
+```
+
+## Command line
 
 ```
-php-cli app.php apply     apply the routes from the database
-php-cli app.php event     queue an "event" task (what the hooks do)
-php-cli app.php sync      sync the policies with Keenetic
-php-cli app.php hooks     install the ndm hooks
-php-cli app.php checks    system checks in the console
-php-cli app.php passwd P  change the panel password
+app.php <apply|update|event|sync|listsync|job|fetch|passwd|hooks|checks|install>
 ```
 
-## Translations
+| Command | What it does |
+|---|---|
+| `apply` | Write the routes from what is stored — no DNS lookups, no downloads. |
+| `update` / `event` | Queue a task (this is what the ndm hooks call). |
+| `sync` | Re-read the policies from Keenetic. |
+| `fetch <url>` | Check the download path with the panel's own settings: folder, curl, interface, seconds, bytes and the reason it failed. |
+| `checks` | System checks with the commands that fix them. |
+| `hooks` | Reinstall the ndm hooks. |
+| `passwd <new>` | Change the panel password. |
+| `install` | Install or repair the panel (see above). |
 
-Interface strings are written in English; a translation is `lang.<code>.json` next to `index.html`: the key is the English text, `{0}`, `{1}` are the values put in. A new language can be added to an update archive and shows up in the list by itself. See `lang.ru.json`.
+## Updates
 
-## Screenshots
-![Targets](docs/screenshots/targets.png)
-![Lists](docs/screenshots/lists.png)
-![Routing tables](docs/screenshots/routing_tables.png)
-![Diagnostics](docs/screenshots/diagnostics.png)
+**Settings → Panel update** shows the newest release and what changed, downloads
+`dns-router.tar.gz` from GitHub, verifies it against the sha256 that GitHub publishes,
+checks the PHP syntax of every file, and installs it with a rollback. An older or the same
+version is refused. A `.tar.gz` can also be uploaded by hand.
 
-## License
+Only these files are ever taken from an archive: `app.php`, `ext.php`, `index.html`,
+`app.js`, `style.css` and `lang.<code>.json`. Anything else — including directory entries —
+makes the panel reject the whole archive.
 
-[MIT](LICENSE). Third-party material and its licenses: [NOTICE.md](NOTICE.md).
+### Making a release
+
+Tag the commit `vX.Y.Z` (the version must match `APP_VERSION` in `app.php`, `JS_VERSION`
+in `app.js` and the badge in `index.html`) and push the tag. The workflow in
+[.github/workflows/release.yml](.github/workflows/release.yml) builds `dns-router.tar.gz`
+with exactly the allowed files and publishes the release with the notes taken from
+`CHANGELOG.md`.
+
+To build the same archive by hand:
+
+```sh
+tar --no-recursion --format=gnu -czf dns-router.tar.gz \
+    app.php ext.php index.html app.js style.css lang.ru.json
+```
+
+`--no-recursion` with an explicit file list matters: a directory entry inside the archive
+is enough for the panel to refuse it.
+
+## Languages
+
+English is built in — every string in the code is English. A language is a file
+`lang.<code>.json` next to `app.php`:
+
+```json
+{ "_name": "Русский", "strings": { "English text": "Перевод" } }
+```
+
+Keys may contain `{0}`, `{1}`… for values. The DOM is translated as it appears, so the rest
+of the code writes plain English. Russian ships with the panel.
+
+## Notes
+
+* All temporary files — task state and logs, locks, downloads, update stages — live in one
+  folder: `/opt/tmp` when it is available, otherwise the system one. **Tools → System
+  checks** shows which one is in use.
+* The router's own traffic does not follow Keenetic policies. That is why the DPI check,
+  the Test route curl and the panel downloads choose their interface explicitly.
+* Sign-in is a signed cookie (no PHP sessions — `ext-session` is often missing on Entware);
+  changing the panel password invalidates every cookie. Five wrong passwords from one
+  address lock the sign-in for five minutes.
+
+## Third-party material
+
+See [NOTICE.md](NOTICE.md). The DPI check follows the idea and the built-in lists of
+[Runnin4ik/dpi-detector](https://github.com/Runnin4ik/dpi-detector) (MIT); the checks
+themselves are written anew in PHP. List data is downloaded from the source at run time and
+is not part of this repository.
+
+## Tests
+
+`tests/` holds the checks used while changing the panel: `php tests/harness.php` exercises
+the temporary folder and the download function against a stub `curl`, `node tests/i18n_run.js`
+runs the panel's own translation engine over the message strings. See [tests/README.md](tests/README.md).

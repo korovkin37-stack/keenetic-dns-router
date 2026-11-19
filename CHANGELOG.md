@@ -2,6 +2,30 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.46.0
+- Settings, Timeouts and limits: every timeout and every limit of the panel is now a setting - 57 values in eight groups (Downloads, DNS lookups, Lists, Tasks and router, Hooks, DPI check, Diagnostics and tables, Panel and security). Each field shows its unit, its allowed range and a tooltip saying what it changes; the code reads them through one registry instead of numbers written into it.
+- The defaults are exactly what the panel did before, so the update changes no behaviour until you edit a value. A value equal to the default is not stored: the database keeps only your own changes, so a later version can improve a default you never touched while your edits survive.
+- Values are checked when saved (range, whole number where it must be whole, and the two pairs that only make sense in order) and clamped again when read, so a hand-edited database cannot break the panel. The arrow next to a field, the button under a group and Reset all put the defaults back.
+- Downloads: the connect and transfer budgets, the number of retries, the pause before them and their common ceiling, the threshold and the time of a stalled transfer, the largest file. This is what a slow tunnel needs: the old 15/120 s are now the defaults, not the law.
+- DNS, lists and tasks: how many lookups run at once and how long an answer may take, how many servers may be listed, how many domains of a list are resolved, the lines and the text of an own list, the shrink guard (now a percentage, 0 turns it off), the router answer and command timeouts, the database lock wait, the time and memory limits, the queue and the history of tasks.
+- Hooks, DPI and diagnostics: how often the ndm hooks may refresh domains and lists, the timeouts and parallelism of the DPI check, how many differences, connections and names the diagnostic tables show, how many tests may run at once.
+- Panel and security: how long the sign-in is remembered, how many wrong passwords lock an address out and for how long, the pause after a wrong password, the update window, the largest update archive, the GitHub answer cache.
+- The version badge in the sidebar is filled by app.js from JS_VERSION: index.html no longer carries a number of its own, so a page held by the browser cache can never show a version that is not running. The version now lives in three places, and the release workflow checks that the badge stayed dynamic.
+- New check tests/limits.php (86 checks): the registry is complete and every value is really used, the bounds and the validation, the reset, the curl budgets taken from the settings, and that no translation of the new card is missing.
+- New check tests/limits_ui.js: draws the card with the real renderLimits() from app.js and the real registry from app.php, in English and in Russian, without a browser - a forgotten field or a missing translation fails the check.
+
+## 5.45.6
+- Reissue of 5.45.5: that release was put together incorrectly, install this one instead. The changes are the same.
+- One folder for every temporary file of the panel: task state and logs, locks, downloads and update stages. Before, downloads and update stages went to /opt/tmp while the task state and the writer's lock went to the system temp folder: a task started by a router event could write where the page does not look, and the two writers did not share the lock. Root opens /opt/tmp for the web user so both see the same folder; without it the system one is used.
+- Old update stages are really cleaned up: they were created in one folder and looked for in another, so the leftovers of a failed update stayed on the drive.
+- System checks: "Temporary files folder" shows which folder the panel uses and whether it can write to it.
+- Downloads (lists and catalog, own lists by a link, GitHub): a failed connection is retried twice instead of failing the whole list, the connect gets 15 s instead of 10 and the transfer 120 s instead of 60, and a transfer that stalled is cut instead of hanging. IPv4 only, like the rest of the panel; proxy variables of the environment are ignored.
+- A download that failed says why: the reason, the interface it went through and its state when it is down, the host and the text of curl. An interface that no longer exists on the router is reported before curl is even started. The stray "123" in the message is gone.
+- app.php fetch <url> from the shell: checks the download path with the panel's own settings and prints the folder, the curl, the interface, the seconds, the bytes and the reason.
+
+## 5.45.5
+- Do not use: the release was put together incorrectly. Install 5.45.6 — it carries the same changes.
+
 ## 5.45.4
 - Fix bugs.
 

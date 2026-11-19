@@ -1,7 +1,6 @@
 <?php
-const APP_VERSION = '5.45.4';
+const APP_VERSION = '5.46.0';
 const COOKIE_NAME = 'krdns_auth';
-const COOKIE_TTL = 604800;
 
 if (PHP_SAPI !== 'cli') {
     ini_set('display_errors', '0');
@@ -15,7 +14,8 @@ set_error_handler(function ($no, $msg, $file, $line) {
     return false;
 });
 
-// RCI and other HTTP reads must not hang a request for a minute
+// RCI and other HTTP reads must not hang a request for a minute. This is the value in force
+// before the config and the database can be read; applyRuntimeLimits() then takes the setting.
 ini_set('default_socket_timeout', '15');
 
 // ============================================ CONFIG ============================================
@@ -39,6 +39,39 @@ function findConfig() {
 $configFile = findConfig();
 if ($configFile !== null) include $configFile;
 
+// ============================================ TEMP FILES ============================================
+// One folder for every temporary file of the panel: task state and logs, locks, downloads, update stages.
+// /opt/tmp when it is there and can be written to (the system /tmp on the router is RAM and small),
+// otherwise the system one.
+// The answer must be the same for the web user and for root: a task started by an ndm hook writes its
+// state as root and the page polls it as the web user. In two different folders the task looks stuck with
+// an empty log, and the two writers do not even share the lock.
+function tempDir() {
+    static $dir = null;
+    if ($dir !== null) return $dir;
+    $opt = '/opt/tmp';
+    if (is_dir($opt)) {
+        // root (a hook, the CLI) opens the folder for the web user once; a web request cannot chmod it.
+        // No sticky bit: the panel replaces files made by the other user (job state, the .pending marker).
+        if (isRoot() && (fileperms($opt) & 0777) !== 0777) @chmod($opt, 0777);
+        if (is_writable($opt)) return $dir = $opt;
+    }
+    return $dir = sys_get_temp_dir();
+}
+
+// The old name of the same folder: one implementation, kept for anything that may still call it.
+function listsTempDir() { return tempDir(); }
+
+// One setting read where no database handle is at hand (the downloads): opens the base for a moment
+// and closes it, instead of leaving a second connection open for the rest of the request.
+// Read fresh every time: a long task must see a setting changed while it runs.
+function panelSetting($key) {
+    $db = getDb();
+    $value = $db ? (string)getSetting($db, $key) : '';
+    if ($db) $db->close();
+    return $value;
+}
+
 function hasPasswordHash() {
     global $auth_pass_hash;
     return preg_match('/^\$2[aby]\$/', (string)$auth_pass_hash) === 1;
@@ -52,6 +85,225 @@ function appState() {
     return checkAuthCookie() === null ? 'login' : 'ok';
 }
 
+// ============================================ TIMEOUTS AND LIMITS ============================================
+// Every timeout and every limit of the panel lives here and in Settings, not in the code.
+// One row: key => [default, min, max, unit, group, label, hint]. The default is what the panel did
+// before these settings existed, so an upgrade changes nothing until you touch a value.
+// Values are kept in the settings table as 'lim_<key>'; a value equal to the default is not stored.
+const LIMIT_GROUPS = [
+    'downloads' => ['Downloads', 'The budgets of every download of the panel: the catalog and the lists of iplist, own lists by a link, the update check and the update from GitHub.'],
+    'dns'       => ['DNS lookups', 'How the domains of targets and lists are resolved through the servers from "DNS for domain lookups".'],
+    'lists'     => ['Lists', 'What the panel accepts into a list, and what it does when a source suddenly shrinks.'],
+    'tasks'     => ['Tasks and router', 'Talking to the router, waiting for the database, and the background task manager.'],
+    'hooks'     => ['Hooks', 'How often the ndm hooks may refresh domains and lists after a firewall rebuild or an interface coming up.'],
+    'dpi'       => ['DPI check', 'Timeouts and parallelism of the DPI check on the Diagnostics tab.'],
+    'diag'      => ['Diagnostics and tables', 'How much the diagnostic tables read and show at a time, and how many tests may run together.'],
+    'panel'     => ['Panel and security', 'Signing in, the login lockout, and the update of the panel itself.'],
+];
+
+const PANEL_LIMITS = [
+    // downloads
+    'dl_connect_timeout' => [15, 1, 120, 'sec', 'downloads', 'Connect timeout', 'TCP and TLS connection to the server. A tunnel that is slow to come up needs more.'],
+    'dl_max_time'        => [120, 10, 3600, 'sec', 'downloads', 'Time for one attempt', 'One whole attempt, the connect included. A big list over a slow tunnel needs more.'],
+    'dl_retries'         => [2, 0, 10, '', 'downloads', 'Retries', 'How many times a failed attempt is repeated: a timeout, a refused connection, an answer in the 5xx range.'],
+    'dl_retry_delay'     => [3, 0, 120, 'sec', 'downloads', 'Pause before a retry', 'The wait before the next attempt. 0: curl doubles the pause on its own.'],
+    'dl_retry_max_time'  => [60, 0, 1800, 'sec', 'downloads', 'Time for all retries', 'A ceiling for the retries together, so a web request (the catalog) cannot outlive its own time limit. 0: no ceiling.'],
+    'dl_speed_limit'     => [1024, 0, 1048576, 'B/s', 'downloads', 'Slow transfer threshold', 'A transfer slower than this counts as stalled. 0: the check is off.'],
+    'dl_speed_time'      => [20, 1, 600, 'sec', 'downloads', 'Time below the threshold', 'How long the transfer may stay below the threshold before curl cuts it, instead of hanging until the time of the attempt is up.'],
+    'dl_max_filesize'    => [100, 1, 1024, 'MB', 'downloads', 'Largest file', 'A bigger answer is refused: the temporary folder may still be in RAM.'],
+    // dns
+    'dns_timeout'        => [5, 1, 60, 'sec', 'dns', 'Answer timeout', 'How long one nslookup may take. A server that has not answered by then is dropped for this lookup.'],
+    'dns_parallel'       => [8, 1, 64, '', 'dns', 'Lookups at a time', 'How many nslookup processes run together. More is faster, but the router feels it.'],
+    'dns_servers_max'    => [8, 1, 32, '', 'dns', 'DNS servers at most', 'How many servers may be listed in "DNS for domain lookups".'],
+    'dns_resolve_limit'  => [1000, 10, 100000, '', 'dns', 'Domains per list', 'How many domains of one list are resolved in one update. More domains take minutes of DNS; the rest are skipped and the list says so.'],
+    // lists
+    'list_max_lines'     => [100000, 100, 2000000, '', 'lists', 'Lines in an own list', 'Everything above this is cut when an own list is saved.'],
+    'list_max_text_mb'   => [4, 1, 64, 'MB', 'lists', 'Pasted text', 'The largest text accepted into an own list.'],
+    'list_shrink_guard'  => [50, 0, 100, '%', 'lists', 'Shrink guard', 'An update that would remove more than this share of the addresses is held back until you confirm it: a source that answers with half a file is usually broken, not shorter. 0: never hold back.'],
+    // tasks and router
+    'rci_timeout'        => [15, 1, 300, 'sec', 'tasks', 'Router answer timeout', 'Every HTTP read from the router and from GitHub. A busy router needs more.'],
+    'rci_post_timeout'   => [30, 1, 600, 'sec', 'tasks', 'Router command timeout', 'Writing commands to the router: routes, rules, policies.'],
+    'db_busy_timeout'    => [20000, 100, 120000, 'ms', 'tasks', 'Database lock wait', 'How long a query waits for the database while a task is writing to it.'],
+    'job_time_limit'     => [300, 30, 3600, 'sec', 'tasks', 'Task time limit', 'The PHP time limit of one background step: updating the lists, and one step of the task manager.'],
+    'job_memory_mb'      => [192, 32, 1024, 'MB', 'tasks', 'Task memory', 'The PHP memory limit of a background task. A list with very many domains needs more.'],
+    'web_memory_mb'      => [128, 32, 1024, 'MB', 'tasks', 'Web request memory', 'The PHP memory limit of a request coming from the page.'],
+    'job_stage_stale'    => [600, 30, 7200, 'sec', 'tasks', 'Stage without news', 'A running task whose stage has not changed for this long belongs to a dead process.'],
+    'job_working_stale'  => [1800, 60, 14400, 'sec', 'tasks', 'List stuck in working', 'A list left in the working state for this long is considered abandoned and may be updated again.'],
+    'job_start_grace'    => [60, 5, 600, 'sec', 'tasks', 'Task start grace', 'A task that has not written its process id yet is given this long to start before it counts as gone.'],
+    'job_history'        => [20, 1, 500, '', 'tasks', 'Finished tasks kept', 'How many finished tasks the task manager remembers.'],
+    'job_queue'          => [6, 1, 100, '', 'tasks', 'Tasks in the queue', 'How many tasks may wait at once. Above this the next one is refused.'],
+    // hooks
+    'hook_targets_min'   => [5, 0, 1440, 'min', 'hooks', 'Domains no more often than', 'After a firewall rebuild or an interface coming up the domains are refreshed at most this often. 0: every time.'],
+    'hook_lists_min'     => [60, 0, 10080, 'min', 'hooks', 'Lists no more often than', 'The same for the lists. 0: every time.'],
+    // dpi
+    'dpi_connect_timeout' => [8, 1, 60, 'sec', 'dpi', 'Connect timeout', 'TCP and TLS connection of one DPI request.'],
+    'dpi_parallel'        => [8, 1, 64, '', 'dpi', 'Requests at a time', 'How many curl requests the check keeps open together. More is faster and heavier for the router.'],
+    'dpi_probe_timeout'   => [12, 2, 120, 'sec', 'dpi', 'Probe and first requests', 'The plain request before the test, and the first two padded requests on the connection.'],
+    'dpi_read_min'        => [1.5, 0.5, 30, 'sec', 'dpi', 'Read timeout, at least', 'The lower bound of the read timeout worked out from the probe.'],
+    'dpi_read_max'        => [12, 1, 120, 'sec', 'dpi', 'Read timeout, at most', 'The upper bound of the same.'],
+    'dpi_read_factor'     => [3, 1, 10, '', 'dpi', 'Read timeout factor', 'The read timeout of the test is the time of the probe multiplied by this, kept between the two bounds above.'],
+    'dpi_dns_udp'         => [3, 1, 30, 'sec', 'dpi', 'DNS over UDP', 'How long the check waits for a DNS answer over UDP.'],
+    'dpi_dns_tcp'         => [5, 1, 60, 'sec', 'dpi', 'DNS over TCP', 'The same over TCP.'],
+    'dpi_quic_wait'       => [3, 1, 30, 'sec', 'dpi', 'QUIC answer wait', 'How long the check waits for an answer over UDP 443 before it calls the site unreachable.'],
+    'dpi_quic_retry'      => [1, 1, 10, 'sec', 'dpi', 'QUIC resend after', 'The first packet is sent again after this long without an answer: one lost packet must not look like blocking.'],
+    'dpi_http_timeout'    => [8, 1, 60, 'sec', 'dpi', 'HTTP request', 'One request of the plain HTTP part of the check.'],
+    'dpi_head_timeout'    => [10, 1, 60, 'sec', 'dpi', 'HEAD request', 'One HEAD request to a site of the check.'],
+    'dpi_plain_timeout'   => [6, 1, 60, 'sec', 'dpi', 'Request to an address', 'The request straight to an address, without a name.'],
+    'dpi_file_timeout'    => [25, 5, 300, 'sec', 'dpi', 'File download', 'The download of the test file: it is a few megabytes, so it gets more time than a request.'],
+    'dpi_memory_mb'       => [64, 32, 1024, 'MB', 'dpi', 'DPI run memory', 'The PHP memory limit of the DPI run itself.'],
+    // diagnostics and tables
+    'diag_run_grace'      => [30, 5, 600, 'sec', 'diag', 'DPI run without a process', 'A DPI run that has no process id yet is given this long before it counts as dead.'],
+    'test_slots'          => [2, 1, 8, '', 'diag', 'Tests at a time', 'The route and DNS tests hold a web worker for seconds. More of them at once would stop the panel from answering.'],
+    'drift_limit'         => [300, 10, 10000, '', 'diag', 'Differences shown', 'How many differences between the tables and the database are shown. A list never applied would give thousands.'],
+    'conn_limit'          => [300, 10, 5000, '', 'diag', 'Connections shown', 'How many connections of the chosen device are read from the router.'],
+    'hostname_limit'      => [20, 1, 500, '', 'diag', 'Names resolved', 'How many addresses of the connections table are resolved into names.'],
+    'table_page_max'      => [500, 10, 5000, '', 'diag', 'Rows per page at most', 'A ceiling for the page size of the routing tables, in case of a broken request from the page.'],
+    // panel and security
+    'cookie_ttl_days'     => [7, 1, 365, 'days', 'panel', 'Signed in for', 'How long the panel remembers a signed-in browser. Changing the password signs everybody out at once.'],
+    'login_attempts'      => [5, 1, 50, '', 'panel', 'Wrong passwords allowed', 'How many wrong passwords one address may send before it is locked out.'],
+    'login_lockout_min'   => [5, 1, 1440, 'min', 'panel', 'Lockout', 'How long that address is locked out, and how long the wrong attempts are remembered.'],
+    'login_delay_ms'      => [500, 0, 5000, 'ms', 'panel', 'Pause after a wrong password', 'The answer to a wrong password is held back by this long, to slow down guessing.'],
+    'maintenance_window'  => [120, 10, 3600, 'sec', 'panel', 'Update window', 'While the panel files are being replaced, other actions are refused for this long after the last step.'],
+    'update_max_mb'       => [5, 1, 64, 'MB', 'panel', 'Largest update archive', 'A bigger archive is refused before it is unpacked.'],
+    'github_cache_hours'  => [6, 0, 168, 'hrs', 'panel', 'Update check cache', 'How long the answer of GitHub about the latest release is reused. 0: ask every time.'],
+    'update_stage_ttl'    => [3600, 300, 86400, 'sec', 'panel', 'Unpacked update kept', 'An unpacked update nobody has applied is removed after this long.'],
+];
+
+// The stored values, read once per request with one query: limit() sits in hot paths (every nslookup
+// batch, every curl command), so it must not open the database each time. A long task therefore works
+// with the values it started with; a change applies to the next task.
+// The peek deliberately does not go through getDb(): getDb() itself asks for a limit (the lock wait),
+// and it would also run the migrations before the settings are even readable.
+function limitsStored($refresh = false) {
+    global $db_file;
+    static $cache = null;
+    if ($refresh) $cache = null;
+    if ($cache !== null) return $cache;
+    $cache = [];
+    if (empty($db_file) || !file_exists($db_file)) return $cache;
+    try {
+        $db = new SQLite3($db_file);
+    } catch (Throwable $e) {
+        return $cache;
+    }
+    // the default lock wait: the stored one is exactly what this query is going to fetch
+    $db->busyTimeout(PANEL_LIMITS['db_busy_timeout'][0]);
+    // no settings table yet (a fresh install): the defaults are the answer
+    $res = @$db->query("SELECT k, v FROM settings WHERE k LIKE 'lim_%'");
+    while ($res && ($row = $res->fetchArray(SQLITE3_ASSOC))) {
+        $cache[substr((string)$row['k'], 4)] = $row['v'];
+    }
+    $db->close();
+    return $cache;
+}
+
+function limitIsFloat($key) {
+    return is_float(PANEL_LIMITS[$key][0]);
+}
+
+// A value inside the bounds of its row, of the right kind: whole numbers, or one decimal for the read timeout.
+function limitClamp($key, $value) {
+    [, $min, $max] = PANEL_LIMITS[$key];
+    $value = max($min, min($max, (float)$value));
+    return limitIsFloat($key) ? round($value, 1) : (int)round($value);
+}
+
+// The value in force: the stored one inside its bounds, or the default.
+function limit($key) {
+    if (!isset(PANEL_LIMITS[$key])) return 0;
+    $stored = limitsStored();
+    if (!isset($stored[$key]) || !is_numeric($stored[$key])) return PANEL_LIMITS[$key][0];
+    return limitClamp($key, $stored[$key]);
+}
+
+// The php.ini values that are limits too. Called once the config and the database are reachable.
+function applyRuntimeLimits() {
+    ini_set('default_socket_timeout', (string)limit('rci_timeout'));
+}
+
+// Everything the Settings card draws: the groups, the rows, the bounds and what differs from the default.
+function limitsForUi() {
+    $stored = limitsStored(true);
+    $groups = [];
+    foreach (LIMIT_GROUPS as $id => $meta) {
+        $groups[$id] = ['id' => $id, 'label' => $meta[0], 'note' => $meta[1], 'items' => [], 'changed' => 0];
+    }
+    foreach (PANEL_LIMITS as $key => $row) {
+        [$default, $min, $max, $unit, $group, $label, $hint] = $row;
+        $changed = isset($stored[$key]) && is_numeric($stored[$key]) && (float)$stored[$key] != (float)$default;
+        $groups[$group]['items'][] = [
+            'key' => $key, 'value' => limit($key), 'default' => $default,
+            'min' => $min, 'max' => $max, 'step' => limitIsFloat($key) ? 0.1 : 1,
+            'unit' => $unit, 'label' => $label, 'hint' => $hint, 'changed' => $changed,
+        ];
+        if ($changed) $groups[$group]['changed']++;
+    }
+    return ['success' => true, 'groups' => array_values($groups)];
+}
+
+// Two pairs of rows only make sense in order; checked on the values as they would be after the save.
+function limitsCrossCheck(array $next) {
+    if ($next['dpi_read_min'] > $next['dpi_read_max']) {
+        fail('The read timeout "at least" must not be above "at most"');
+    }
+    if ($next['dpi_quic_retry'] > $next['dpi_quic_wait']) {
+        fail('The QUIC packet cannot be resent after the wait for the answer is already over');
+    }
+    return true;
+}
+
+function doSaveLimits($in) {
+    $in = is_array($in) ? $in : [];
+    $values = $in['limits'] ?? null;
+    if (!is_array($values) || !$values) fail('Nothing to save');
+    limitsStored(true);
+    $next = [];
+    foreach (PANEL_LIMITS as $key => $row) $next[$key] = limit($key);
+    $write = [];
+    foreach ($values as $key => $raw) {
+        if (!isset(PANEL_LIMITS[$key])) fail("Unknown setting: $key");
+        [$default, $min, $max, $unit, , $label] = PANEL_LIMITS[$key];
+        if (is_bool($raw) || !is_numeric($raw)) fail("$label: not a number");
+        $value = (float)$raw;
+        if ($value < $min || $value > $max) {
+            fail("$label: allowed from $min to $max" . ($unit !== '' ? " $unit" : ''));
+        }
+        if (!limitIsFloat($key) && floor($value) != $value) fail("$label: a whole number is expected");
+        $value = limitClamp($key, $value);
+        $next[$key] = $value;
+        // the default is not stored: the table keeps only what you really changed
+        $write[$key] = $value == $default ? null : (string)$value;
+    }
+    limitsCrossCheck($next);
+    $db = getDb();
+    if (!$db) fail('Database not found');
+    foreach ($write as $key => $value) setSetting($db, 'lim_' . $key, $value);
+    $db->close();
+    return limitsForUi();
+}
+
+// Back to the defaults: the named keys, one group, or everything.
+function doResetLimits($in) {
+    $in = is_array($in) ? $in : [];
+    $keys = [];
+    if (!empty($in['keys']) && is_array($in['keys'])) {
+        foreach ($in['keys'] as $key) {
+            if (!isset(PANEL_LIMITS[$key])) fail("Unknown setting: $key");
+            $keys[] = $key;
+        }
+    } elseif (!empty($in['group'])) {
+        $group = (string)$in['group'];
+        if (!isset(LIMIT_GROUPS[$group])) fail("Unknown group: $group");
+        foreach (PANEL_LIMITS as $key => $row) if ($row[4] === $group) $keys[] = $key;
+    } else {
+        $keys = array_keys(PANEL_LIMITS);
+    }
+    $db = getDb();
+    if (!$db) fail('Database not found');
+    foreach ($keys as $key) setSetting($db, 'lim_' . $key, null);
+    $db->close();
+    return limitsForUi();
+}
 // ============================================ AUTH ============================================
 // Signed cookie instead of PHP sessions (ext-session is often missing on Entware).
 // The secret derives from the password hash, so changing the password invalidates all cookies.
@@ -65,8 +317,9 @@ function cookieOpts($expires) {
 }
 
 function issueAuthCookie($user) {
-    $payload = base64_encode(json_encode(['user' => $user, 'exp' => time() + COOKIE_TTL]));
-    setcookie(COOKIE_NAME, $payload . '.' . hash_hmac('sha256', $payload, authSecret()), cookieOpts(time() + COOKIE_TTL));
+    $ttl = limit('cookie_ttl_days') * 86400;
+    $payload = base64_encode(json_encode(['user' => $user, 'exp' => time() + $ttl]));
+    setcookie(COOKIE_NAME, $payload . '.' . hash_hmac('sha256', $payload, authSecret()), cookieOpts(time() + $ttl));
 }
 
 function checkAuthCookie() {
@@ -82,11 +335,13 @@ function checkAuthCookie() {
 
 function doLogin($in) {
     global $auth_user, $auth_pass_hash;
-    // 5 wrong passwords from one address lock it out for 5 minutes
-    $file = sys_get_temp_dir() . '/dns-router-login.json';
+    // Wrong passwords from one address lock it out; how many and for how long is in Settings
+    $tries = limit('login_attempts');
+    $lockout = limit('login_lockout_min') * 60;
+    $file = tempDir() . '/dns-router-login.json';
     $ip = (string)($_SERVER['REMOTE_ADDR'] ?? '');
     $fails = json_decode((string)@file_get_contents($file), true) ?: [];
-    $fails = array_filter($fails, fn($f) => $f['until'] > time() || $f['last'] > time() - 300);
+    $fails = array_filter($fails, fn($f) => $f['until'] > time() || $f['last'] > time() - $lockout);
     if (($fails[$ip]['until'] ?? 0) > time()) {
         fail('Too many wrong passwords: try again in a few minutes', 429);
     }
@@ -98,9 +353,9 @@ function doLogin($in) {
         return ['success' => true];
     }
     $count = ($fails[$ip]['count'] ?? 0) + 1;
-    $fails[$ip] = ['count' => $count >= 5 ? 0 : $count, 'last' => time(), 'until' => $count >= 5 ? time() + 300 : 0];
+    $fails[$ip] = ['count' => $count >= $tries ? 0 : $count, 'last' => time(), 'until' => $count >= $tries ? time() + $lockout : 0];
     @file_put_contents($file, json_encode($fails), LOCK_EX);
-    usleep(500000);
+    usleep(limit('login_delay_ms') * 1000);
     return ['success' => false, 'error' => 'Invalid username or password'];
 }
 
@@ -117,7 +372,7 @@ function getDb() {
         return null;
     }
     $db = new SQLite3($db_file);
-    $db->busyTimeout(20000);
+    $db->busyTimeout(limit('db_busy_timeout'));
     $db->exec("PRAGMA foreign_keys = ON;");
     if (!$migrated) {
         $have = [];
@@ -240,7 +495,7 @@ function execReadOnly(array $argv) {
 }
 
 function writeFileAsRoot($path, $content, $backup = false, $owner = null) {
-    $tmp = tempnam(sys_get_temp_dir(), 'krdns_');
+    $tmp = tempnam(tempDir(), 'krdns_');
     if ($tmp === false || file_put_contents($tmp, $content) === false) return false;
     $perms = @fileperms($path);
     if ($backup && file_exists($path)) {
@@ -267,7 +522,7 @@ function ipRouteFlush($table) {
 
 // Applies many routes with one root call: "ip -force -batch" keeps going past duplicates.
 function ipRouteBatch(array $lines) {
-    $tmp = tempnam(sys_get_temp_dir(), 'krroutes_');
+    $tmp = tempnam(tempDir(), 'krroutes_');
     if ($tmp === false || file_put_contents($tmp, implode("\n", $lines) . "\n") === false) return false;
     chmod($tmp, 0644);
     $out = execAsRoot(['/opt/sbin/ip', '-force', '-batch', $tmp]);
@@ -292,7 +547,7 @@ function listTable($ourTable) {
 // One writer at a time: web requests and ndm hooks both rebuild the same tables.
 // A hook that finds the lock busy leaves a marker and the running writer repeats once.
 function locked(callable $fn, $nowait = false) {
-    $file = sys_get_temp_dir() . '/dns-router.lock';
+    $file = tempDir() . '/dns-router.lock';
     $h = fopen($file, 'c');
     @chmod($file, 0666);
     if (!flock($h, $nowait ? LOCK_EX | LOCK_NB : LOCK_EX)) {
@@ -419,12 +674,14 @@ function nslookupA($host, $server) {
 
 // Runs many nslookup calls at once (at most $limit processes, each killed after $timeout seconds).
 // $jobs: key => [host, server]. Returns key => list of IPv4.
-function nslookupBatch(array $jobs, $limit = 8, $timeout = 5) {
+function nslookupBatch(array $jobs, $parallel = null, $timeout = null) {
+    $parallel ??= limit('dns_parallel');
+    $timeout ??= limit('dns_timeout');
     $result = [];
     $running = [];
     $queue = $jobs;
     while ($queue || $running) {
-        while ($queue && count($running) < $limit) {
+        while ($queue && count($running) < $parallel) {
             $key = array_key_first($queue);
             [$host, $server] = $queue[$key];
             unset($queue[$key]);
@@ -1048,8 +1305,8 @@ function doGetRouteDrift(SQLite3 $db) {
         'routes'  => $plan['routes'],
         'counts'  => $c,
         'total'   => $c['added'] + $c['changed'] + $c['removed'] + $c['rules_missing'] + $c['rules_extra'],
-        // the first 300 are enough to see what is wrong; a list never applied would give thousands
-        'drift'   => array_slice($plan['drift'], 0, 300),
+        // a few hundred are enough to see what is wrong; a list never applied would give thousands
+        'drift'   => array_slice($plan['drift'], 0, limit('drift_limit')),
         'tables'  => $plan['tables'],
         'checked' => time(),
     ];
@@ -1474,8 +1731,8 @@ function birdHook() {
 const HOOK_RAN = '/tmp/dns-router-hook-';
 
 const HOOK_DEFS = [
-    'netfilter' => [BIRD_NETFILTER_HOOK, 'Firewall rebuilt', 'ndm rebuilt the firewall: ask the task manager for a refresh. It writes the routes, refreshes the domains (at most every 5 minutes) and the lists (at most once an hour) and puts the BGP rule and the neighbor routes back.'],
-    'ifstate'   => [BIRD_IFSTATE_HOOK, 'Interface up', 'An interface came up and is connected: ask the task manager for a refresh. It writes the routes, refreshes the domains (at most every 5 minutes) and the lists (at most once an hour) and puts the BGP rule and the neighbor routes back.'],
+    'netfilter' => [BIRD_NETFILTER_HOOK, 'Firewall rebuilt', 'ndm rebuilt the firewall: ask the task manager for a refresh. It writes the routes, refreshes the domains and the lists no more often than Settings allows (Timeouts and limits, Hooks) and puts the BGP rule and the neighbor routes back.'],
+    'ifstate'   => [BIRD_IFSTATE_HOOK, 'Interface up', 'An interface came up and is connected: ask the task manager for a refresh. It writes the routes, refreshes the domains and the lists no more often than Settings allows (Timeouts and limits, Hooks) and puts the BGP rule and the neighbor routes back.'],
     'bird'      => [BIRD_HOOK_PATH, 'BGP tunnel', 'Generated from "BGP routing hook": starts/stops bird and the BGP rule with the tunnel.'],
 ];
 
@@ -1595,6 +1852,13 @@ function systemChecks() {
 
     $add('curl', 'curl (downloads for Lists)', listsCurl() !== '', 'optional',
         'Downloads the lists of IPs and domains from the source over HTTPS.', ['opkg update && opkg install curl ca-bundle'], 'installCurl');
+
+    $tmp = tempDir();
+    $tmpOk = is_writable($tmp);
+    $add('temp', 'Temporary files folder', $tmpOk, 'required',
+        $tmpOk ? 'Task state, logs and downloads: ' . $tmp
+               : 'The panel cannot write to ' . $tmp . ': tasks would hang with an empty log.',
+        $tmpOk ? [] : ['chmod 0777 ' . $tmp, $restart]);
 
     $openssl = phpCliModule('openssl');
     $add('openssl', 'PHP OpenSSL (DoT and QUIC in the DPI check)', $openssl['ok'], 'optional',
@@ -1919,6 +2183,11 @@ function coreHandlers() {
         'installOpenssl'  => fn() => phpModuleInstall('openssl'),
         'installSockets'  => fn() => phpModuleInstall('sockets'),
         'getRoutePrefs'   => fn() => withDb(fn($db) => routePrefs($db) + ['bird_table' => (int)getSetting($db, 'bird_table') ?: null]),
+
+        // Timeouts and limits: the registry above, drawn by the Settings tab
+        'getLimits'       => 'limitsForUi',
+        'saveLimits'      => 'doSaveLimits',
+        'resetLimits'     => 'doResetLimits',
     ];
 }
 
@@ -1932,11 +2201,11 @@ function extHandlers() {
 const UPDATE_BLOCKS = [
     'syncPolicies', 'importConfig', 'installHooks', 'installCurl', 'installOpenssl', 'installSockets', 'saveBirdConfig', 'restartBird', 'setHookEnabled', 'saveHook', 'resetHook',
     'clearBirdLog', 'enableBirdLog', 'uploadUpdate', 'applyUpdate', 'rollbackUpdate', 'githubUpdate', 'saveDnsResolver', 'savePanelNet',
-    'saveListsSources', 'saveRoutePrefs', 'saveBirdHook',
+    'saveListsSources', 'saveRoutePrefs', 'saveBirdHook', 'saveLimits', 'resetLimits',
 ];
 
 function jobIsRunning() {
-    $prefix = sys_get_temp_dir() . '/dns-router-';
+    $prefix = tempDir() . '/dns-router-';
     $job = json_decode((string)@file_get_contents($prefix . 'job.json'), true);
     if (!$job || $job['state'] !== 'running') return false;
     $pid = (int)(json_decode((string)@file_get_contents($prefix . 'jobpid.json'), true)['pid'] ?? 0);
@@ -1944,6 +2213,7 @@ function jobIsRunning() {
 }
 
 function handleRequest() {
+    applyRuntimeLimits();
     header('Content-Type: application/json');
     header('Cache-Control: no-store');
     register_shutdown_function(function () {
@@ -1990,15 +2260,15 @@ function handleRequest() {
         }
 
         // While the panel files are being replaced old and new code would answer side by side
-        $maintenance = sys_get_temp_dir() . '/dns-router-maintenance';
-        if ($action !== 'state' && is_file($maintenance) && filemtime($maintenance) > time() - 120) fail('The panel is being updated: try again in a minute', 503);
+        $maintenance = tempDir() . '/dns-router-maintenance';
+        if ($action !== 'state' && is_file($maintenance) && filemtime($maintenance) > time() - limit('maintenance_window')) fail('The panel is being updated: try again in a minute', 503);
         if (in_array($action, UPDATE_BLOCKS, true) && jobIsRunning()) fail('An update is running: wait for it to finish', 409);
 
-        // Tests hold a php-fpm worker for seconds: at most two at a time, so the panel keeps answering
+        // Tests hold a php-fpm worker for seconds: only a few at a time, so the panel keeps answering
         if (in_array($action, ['testRoute', 'testRouteCurl', 'testDnsResolver'], true)) {
             $testLock = null;
-            foreach ([1, 2] as $slot) {
-                $h = fopen(sys_get_temp_dir() . '/dns-router-test' . $slot . '.lock', 'c');
+            foreach (range(1, limit('test_slots')) as $slot) {
+                $h = fopen(tempDir() . '/dns-router-test' . $slot . '.lock', 'c');
                 if (flock($h, LOCK_EX | LOCK_NB)) {
                     $testLock = $h;
                     break;
@@ -2027,6 +2297,11 @@ function cliInstall() {
 
     if (!isRoot()) exit("install must run as root\n");
     if (trim((string)shell_exec('id -u ' . escapeshellarg($webUser) . ' 2>/dev/null')) === '') exit("User $webUser does not exist\n");
+
+    // The temp folder must exist and be writable by the web user, otherwise root and the panel
+    // would each pick their own (see tempDir()).
+    if (!is_dir('/opt/tmp')) @mkdir('/opt/tmp', 0777, true);
+    if (is_dir('/opt/tmp')) @chmod('/opt/tmp', 0777);
 
     if ($configFile === null) {
         $routerPass = (string)getenv('DNSR_ROUTER_PASS');
@@ -2117,6 +2392,7 @@ function fixDataOwnership() {
         if ($f && file_exists($f)) @chown($f, $uid);
     }
     if ($db_file && file_exists($db_file)) @chmod($db_file, 0660);
+    if (is_dir('/opt/tmp') && (fileperms('/opt/tmp') & 0777) !== 0777) @chmod('/opt/tmp', 0777);
 }
 
 function configText(array $vars) {
@@ -2126,6 +2402,7 @@ function configText(array $vars) {
 }
 
 function runCli(array $argv) {
+    applyRuntimeLimits();
     $cmd = $argv[1] ?? '';
     $db = in_array($cmd, ['apply', 'update', 'event', 'sync', 'next'], true) ? (getDb() ?: exit("Database not found - finish the setup wizard first\n")) : null;
 
@@ -2184,11 +2461,27 @@ function runCli(array $argv) {
             $r = hooksInstall();
             foreach ($r['hooks'] as $h) echo ($h['installed'] ? 'ok   ' : 'FAIL ') . $h['path'] . "\n";
             break;
+        case 'fetch':
+            // Diagnostic of the download path: exactly the code the lists use, with the panel's settings.
+            // Says which folder, which curl, which interface, how long it took and why it failed.
+            $url = (string)($argv[2] ?? '');
+            if ($url === '') exit("Usage: app.php fetch <url>\n");
+            extHandlers();
+            echo 'temp folder: ' . tempDir() . "\n";
+            echo 'curl: ' . (listsCurl() ?: 'not installed') . "\n";
+            echo 'interface: ' . (panelSetting('curl_interface') ?: '(not set, normal routing)') . "\n";
+            $tmp = tempnam(tempDir(), 'krprobe_');
+            $t = microtime(true);
+            $error = listsDownload($url, $tmp);
+            printf("time: %.1f s, bytes: %d\n", microtime(true) - $t, (int)@filesize($tmp));
+            @unlink($tmp);
+            echo $error === '' ? "OK\n" : $error . "\n";
+            break;
         case 'checks':
             foreach (systemChecks() as $c) echo ($c['ok'] === null ? '[ ? ] ' : ($c['ok'] ? '[ok] ' : '[!!] ')) . $c['label'] . ($c['ok'] === false ? " - {$c['detail']}\n      " . implode("\n      ", $c['fix']) : '') . "\n";
             break;
         default:
-            echo "Usage: app.php <apply|update|event|sync|listsync|job|passwd|hooks|checks|install>\n";
+            echo "Usage: app.php <apply|update|event|sync|listsync|job|fetch|passwd|hooks|checks|install>\n";
     }
 }
 
