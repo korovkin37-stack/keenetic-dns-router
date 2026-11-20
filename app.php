@@ -1,7 +1,7 @@
 <?php
 const APP_VERSION = '5.46.4';
 const COOKIE_NAME = 'krdns_auth';
-
+ 
 if (PHP_SAPI !== 'cli') {
     ini_set('display_errors', '0');
     error_reporting(E_ALL);
