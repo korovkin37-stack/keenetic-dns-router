@@ -2,7 +2,7 @@ name: release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['v*', '[0-9]*']
 
 permissions:
   contents: write
@@ -16,6 +16,15 @@ jobs:
       - name: Check the version and the syntax
         run: |
           set -eu
+          # A tag without the leading v used to trigger nothing at all: no run, no error,
+          # no release. Now it triggers this workflow and says exactly what to do.
+          case "$GITHUB_REF_NAME" in
+            v[0-9]*) ;;
+            *)
+              echo "::error::the tag must start with v: got '$GITHUB_REF_NAME'. Create the tag v$GITHUB_REF_NAME on this commit, push it, and delete this one."
+              exit 1
+              ;;
+          esac
           tag="${GITHUB_REF_NAME#v}"
           ver=$(sed -n "s/^const APP_VERSION = '\(.*\)';/\1/p" app.php)
           [ "$tag" = "$ver" ] || { echo "tag v$tag, but APP_VERSION in app.php is $ver"; exit 1; }

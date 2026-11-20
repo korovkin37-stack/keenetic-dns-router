@@ -8,7 +8,7 @@
 таблицы политик роутера через `ip rule` / `ip route`. Всё работает на самом роутере под
 Entware: PHP + nginx, без облака и без сборки.
 
-**Версия 5.46.1** · [English](README.md) · [Изменения](CHANGELOG.ru.md) · [Changelog in English](CHANGELOG.md)
+**Версия 5.46.2** · [English](README.md) · [Изменения](CHANGELOG.ru.md) · [Changelog in English](CHANGELOG.md)
 
 ---
 
@@ -33,6 +33,12 @@ root не вызывается.
 Долгая работа (резолв, скачивание, применение) идёт фоновой задачей на роутере с очередью и
 логом — страницу можно закрыть. ndm-хуки заново применяют маршруты, когда пересобран файрвол
 или изменился интерфейс.
+
+## Скриншоты
+![Цели](docs/screenshots/targets.png)
+![Списки](docs/screenshots/lists.png)
+![Таблицы](docs/screenshots/routing_tables.png)
+![Диагностика](docs/screenshots/diagnostics.png)
 
 ## Требования
 
@@ -249,12 +255,6 @@ tar --no-recursion --format=gnu -czf dns-router.tar.gz \
 * [CHANGELOG.ru.md](CHANGELOG.ru.md) / [CHANGELOG.md](CHANGELOG.md) — что менялось; они же
   служат описанием релиза на GitHub.
 * [NOTICE.md](NOTICE.md) — сторонние материалы.
-
-## Скриншоты
-![Targets](docs/screenshots/targets.png)
-![Lists](docs/screenshots/lists.png)
-![Routing tables](docs/screenshots/routing_tables.png)
-![Diagnostics](docs/screenshots/diagnostics.png)
 
 ## Сторонние материалы
 

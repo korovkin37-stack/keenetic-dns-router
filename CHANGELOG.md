@@ -2,7 +2,12 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.46.2
+- A tag without the leading v no longer passes in silence. Before, tags like 5.46.1 matched no trigger, so GitHub created no run at all: no error, no release, and nothing to look at. Such a tag now starts the workflow and stops with the exact instruction - create the tag vX.Y.Z on this commit, push it, delete the wrong one.
+- Everything else is as in 5.46.1: all 57 timeouts and limits in Settings, the version badge filled by app.js, install.sh and README.ru.md in the repository, screenshots in both READMEs.
+
 ## 5.46.1
+- Not published: the tag was pushed without the leading v, so GitHub started no build. Install 5.46.2 - the panel is the same.
 - The GitHub release build is fixed. The workflow looked for the version number inside index.html, which carries no number of its own since 5.46.0, so every release failed at the check step with "index.html still shows another version". The check is now the other way round: the badge must stay empty in the HTML, no version number may appear anywhere in it, and app.js must fill the badge from JS_VERSION.
 - The check step stops at the first failure. Before, its exit code came from the last command in the list, so a failed php -l in the middle did not stop the build: a file with a syntax error could reach the release. Verified: a damaged ext.php now fails the step.
 - The panel code is the same as in 5.46.0 apart from two tooltips and the version line. This release exists so the fixed workflow can build and publish it.
@@ -12,6 +17,7 @@
 - The version now lives in four places: README.ru.md carries it too. tools/bump_version.py, tools/make_zip.py and the release workflow check all four, so the Russian page cannot drift.
 - Written down: client_max_body_size 8m in nginx is the outer ceiling of an uploaded update, so raising the panel's own "Largest update archive" above 8 MB only helps if nginx is raised too.
 - Two tooltips of the limits card named the DNS card "DNS для разрешения доменов" while the interface calls it "DNS для резолва доменов"; they now use the real name.
+- Screenshots in both READMEs: Targets, Lists, Routing tables and Diagnostics, from `docs/screenshots/`.
 
 ## 5.46.0
 - The GitHub release of this version was not built: the workflow still looked for a version number in index.html. The panel files themselves are fine - 5.46.1 is the same panel with the fixed build.

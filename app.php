@@ -1,5 +1,5 @@
 <?php
-const APP_VERSION = '5.46.0';
+const APP_VERSION = '5.46.2';
 const COOKIE_NAME = 'krdns_auth';
 
 if (PHP_SAPI !== 'cli') {

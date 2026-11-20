@@ -1,7 +1,7 @@
 // app.js - клиентская логика
 
 const API = '/app.php';
-const JS_VERSION = '5.46.0'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.46.2'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================

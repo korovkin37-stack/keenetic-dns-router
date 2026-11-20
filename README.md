@@ -8,7 +8,7 @@ downloads IP lists from a source such as [iplist.opencck.org](https://iplist.ope
 and writes the routes into the policy tables of the router with `ip rule` / `ip route`.
 It runs on the router itself under Entware: PHP + nginx, no cloud, no build step.
 
-**Version 5.46.1** · [Changelog](CHANGELOG.md) · [Русская версия](README.ru.md) · [Изменения по-русски](CHANGELOG.ru.md)
+**Version 5.46.2** · [Changelog](CHANGELOG.md) · [Русская версия](README.ru.md) · [Изменения по-русски](CHANGELOG.ru.md)
 
 ---
 
@@ -33,6 +33,12 @@ changed, nothing is written and no root call is made.
 Long work (resolving, downloading, applying) runs as a background task on the router with
 a queue and a log — the page can be closed. ndm hooks re-apply the routes when the
 firewall is rebuilt or an interface changes.
+
+## Screenshots
+![Targets](docs/screenshots/targets.png)
+![Lists](docs/screenshots/lists.png)
+![Routing tables](docs/screenshots/routing_tables.png)
+![Diagnostics](docs/screenshots/diagnostics.png)
 
 ## Requirements
 
@@ -249,12 +255,6 @@ of the code writes plain English. Russian ships with the panel.
 * [CHANGELOG.md](CHANGELOG.md) / [CHANGELOG.ru.md](CHANGELOG.ru.md) — what changed, also used
   as the release notes on GitHub.
 * [NOTICE.md](NOTICE.md) — third-party material.
-
-## Screenshots
-![Targets](docs/screenshots/targets.png)
-![Lists](docs/screenshots/lists.png)
-![Routing tables](docs/screenshots/routing_tables.png)
-![Diagnostics](docs/screenshots/diagnostics.png)
 
 ## Third-party material
 
