@@ -8,7 +8,7 @@ downloads IP lists from a source such as [iplist.opencck.org](https://iplist.ope
 and writes the routes into the policy tables of the router with `ip rule` / `ip route`.
 It runs on the router itself under Entware: PHP + nginx, no cloud, no build step.
 
-**Version 5.45.6** · [Changelog](CHANGELOG.md) · [Изменения по-русски](CHANGELOG.ru.md)
+**Version 5.46.1** · [Changelog](CHANGELOG.md) · [Русская версия](README.ru.md) · [Изменения по-русски](CHANGELOG.ru.md)
 
 ---
 
@@ -48,6 +48,44 @@ the shell. Every failed check comes with the command that fixes it.
 
 ## Install
 
+### install.sh — the usual way
+
+Download `install.sh` and `dns-router.tar.gz` from the release into one directory on the
+router and run it as root:
+
+```sh
+sh install.sh
+```
+
+Without the archive next to it, `install.sh` downloads the latest release itself. It asks
+for the Keenetic admin password and a panel password (Enter generates one), offers bird/BGP
+and the panel port (**880** by default), installs the Entware packages, fixes `php.ini` and
+php-fpm, writes `nginx.conf`, unpacks the panel, then calls `app.php install` and checks that
+the panel answers.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `MANUAL=1` | Do not touch nginx, `php.ini`, php-fpm or packages — only the panel files | off |
+| `WWW=/path` | Panel directory | `/opt/share/www/dns-router` |
+| `PORT=NNN` | Panel port | `880` |
+| `RCI=http://127.0.0.1:NN` | Local Keenetic RCI address | `http://127.0.0.1:79` |
+| `WITH_BIRD=1` | Install bird without asking | off |
+| `RELEASE_URL=…` | Where to download the archive from | the latest GitHub release |
+| `WEBUSER_ENV=name` | php-fpm user in `MANUAL=1` mode | taken from the config owner |
+
+An existing installation is recognised by `config.php`: the router password is not asked
+again, the files are replaced and whatever is missing is repaired. **Panel 4.x is upgraded
+in place** — its directory is found by `api.php`, and `lib.php`, `api.php`, `css/`, `js/` and
+the other old scripts are removed afterwards. Before any of that, the old panel, config and
+database are packed into `/opt/var/dns-router-backup/before-install-<date>/`, and the path is
+printed at the end so you can roll back.
+
+At the end it prints the panel address, the login, the generated password if there was one,
+and the output of `app.php checks`. Leftover cron jobs and foreign ndm hooks of the old panel
+are reported, not deleted.
+
+### app.php install — by hand
+
 Put the panel files in a directory served by nginx (for example `/opt/www/dns-router`),
 then as root:
 
@@ -67,8 +105,9 @@ DNSR_WEB_USER=nobody \
 | `DNSR_CONF_DIR` | Where `config.php` and the database live | `/opt/etc/dns-router` |
 | `DNSR_RCI` | Local Keenetic RCI address | `http://127.0.0.1:79` |
 
-The installer writes `config.php`, creates the database, installs the ndm hooks and fixes
-the ownership so the web user can write. It keeps an existing config and database.
+`app.php install` writes `config.php`, creates the database, installs the ndm hooks and
+fixes the ownership so the web user can write. It keeps an existing config and database, and
+it never touches nginx, `php.ini` or packages — that part is `install.sh`'s job.
 
 Alternatively open the panel in a browser and follow the two-step setup wizard: it shows
 the system checks, asks for the router access and the panel login, then creates the database.
@@ -82,13 +121,22 @@ Serve the panel directory over HTTPS if it is reachable from outside the LAN. `a
 sends `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY` itself, and the page
 carries a Content-Security-Policy that forbids foreign scripts.
 
-The installer does **not** touch your nginx configuration. Make sure `config.php` (it holds
-the router password) and the database are not served — keep them outside the web directory
-(the default `/opt/etc/dns-router` already is), or deny them explicitly:
+`install.sh` writes its own `nginx.conf` (the old one is kept as `nginx.conf.orig`) and
+refuses to continue if nginx does not accept it. With `MANUAL=1` it leaves your configuration
+alone and prints the lines to add instead. `app.php install` never touches nginx at all.
+
+Either way, make sure `config.php` (it holds the router password), the database and `ext.php`
+are not served — keep the config and the database outside the web directory (the default
+`/opt/etc/dns-router` already is), or deny them explicitly:
 
 ```nginx
-location ~ /(config\.php|routes\.db|dpi/.*) { deny all; }
+location ~ ^/(config\.php|routes\.db|ext\.php|dpi/.*)$ { return 404; }
+client_max_body_size 8m;   # uploading an update from Settings
 ```
+
+`client_max_body_size` is the outer ceiling of an uploaded update: the panel's own limit is
+**Settings → Timeouts and limits → Panel and security → Largest update archive** (5 MB by
+default). Raising the panel limit above 8 MB only helps if nginx is raised too.
 
 ## Command line
 
@@ -120,11 +168,18 @@ makes the panel reject the whole archive.
 
 ### Making a release
 
-Tag the commit `vX.Y.Z` (the version must match `APP_VERSION` in `app.php`, `JS_VERSION`
-in `app.js` and the badge in `index.html`) and push the tag. The workflow in
-[.github/workflows/release.yml](.github/workflows/release.yml) builds `dns-router.tar.gz`
-with exactly the allowed files and publishes the release with the notes taken from
-`CHANGELOG.md`.
+Tag the commit `vX.Y.Z` and push the tag. The version lives in four places and they must
+agree: `APP_VERSION` in `app.php`, `JS_VERSION` in `app.js`, the `Version X` line under the
+title of this file and the `Версия X` line of [README.ru.md](README.ru.md).
+`index.html` carries no number: the badge in the sidebar is filled by `app.js` from
+`JS_VERSION`, so a cached page can never show a version that is not running. The workflow in
+[.github/workflows/release.yml](.github/workflows/release.yml) checks the syntax of every
+file including `install.sh`, builds `dns-router.tar.gz` with exactly the allowed files and
+publishes the release with the notes taken from `CHANGELOG.md` and `CHANGELOG.ru.md`.
+
+The release carries two assets: `dns-router.tar.gz` (what the panel installs) and
+`install.sh` (what you run on the router). `install.sh` is deliberately **not** inside the
+archive — the panel refuses any file it does not know.
 
 To build the same archive by hand:
 
@@ -135,6 +190,34 @@ tar --no-recursion --format=gnu -czf dns-router.tar.gz \
 
 `--no-recursion` with an explicit file list matters: a directory entry inside the archive
 is enough for the panel to refuse it.
+
+## Timeouts and limits
+
+**Settings → Timeouts and limits** holds every timeout and every limit of the panel:
+57 values in eight groups (Downloads, DNS lookups, Lists, Tasks and router, Hooks,
+DPI check, Diagnostics and tables, Panel and security). Each field shows its unit, its
+allowed range and a tooltip explaining what it changes; the arrow next to a field, the
+button under a group and **Reset all** put the defaults back.
+
+* The registry is `PANEL_LIMITS` in `app.php`: one row per value with its default, bounds,
+  unit, group, label and hint. The code reads a value with `limit('key')` — there are no
+  timeouts or limits left in the code itself.
+* The defaults are exactly what the panel did before the settings existed, so an upgrade
+  changes no behaviour until you touch a value.
+* A value equal to the default is **not stored**. The database keeps only what you really
+  changed (`lim_<key>` in `settings`), so a later version can improve a default you never
+  touched while your own changes survive.
+* Values are validated on save (range, whole number where it must be whole, and the two
+  pairs that only make sense in order) and clamped again on read, so a hand-edited
+  database cannot break the panel.
+* One query per request reads them all: `limit()` sits in hot paths. A task that is already
+  running keeps the values it started with — a change applies to the next task.
+* The pause between tasks (`job_delay`) was already a setting of the Panel card and stays
+  there.
+
+Two numbers stay fixed on purpose: the list table is the policy table + 100, so the number
+of policies is capped at 100 by that layout, and the DPI test always sends the same number
+of padded requests — the measurement depends on it.
 
 ## Languages
 
@@ -157,7 +240,21 @@ of the code writes plain English. Russian ships with the panel.
   the Test route curl and the panel downloads choose their interface explicitly.
 * Sign-in is a signed cookie (no PHP sessions — `ext-session` is often missing on Entware);
   changing the panel password invalidates every cookie. Five wrong passwords from one
-  address lock the sign-in for five minutes.
+  address lock the sign-in for five minutes — both numbers are in Settings, Timeouts and
+  limits, Panel and security.
+
+## Documentation
+
+* [README.ru.md](README.ru.md) — the same instructions in Russian.
+* [CHANGELOG.md](CHANGELOG.md) / [CHANGELOG.ru.md](CHANGELOG.ru.md) — what changed, also used
+  as the release notes on GitHub.
+* [NOTICE.md](NOTICE.md) — third-party material.
+
+## Screenshots
+![Targets](docs/screenshots/targets.png)
+![Lists](docs/screenshots/lists.png)
+![Routing tables](docs/screenshots/routing_tables.png)
+![Diagnostics](docs/screenshots/diagnostics.png)
 
 ## Third-party material
 
@@ -165,9 +262,3 @@ See [NOTICE.md](NOTICE.md). The DPI check follows the idea and the built-in list
 [Runnin4ik/dpi-detector](https://github.com/Runnin4ik/dpi-detector) (MIT); the checks
 themselves are written anew in PHP. List data is downloaded from the source at run time and
 is not part of this repository.
-
-## Tests
-
-`tests/` holds the checks used while changing the panel: `php tests/harness.php` exercises
-the temporary folder and the download function against a stub `curl`, `node tests/i18n_run.js`
-runs the panel's own translation engine over the message strings. See [tests/README.md](tests/README.md).

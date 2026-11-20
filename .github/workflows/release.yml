@@ -15,11 +15,32 @@ jobs:
 
       - name: Check the version and the syntax
         run: |
+          set -eu
           tag="${GITHUB_REF_NAME#v}"
           ver=$(sed -n "s/^const APP_VERSION = '\(.*\)';/\1/p" app.php)
           [ "$tag" = "$ver" ] || { echo "tag v$tag, but APP_VERSION in app.php is $ver"; exit 1; }
-          grep -q "v$ver" index.html || { echo "index.html still shows another version"; exit 1; }
           grep -q "^const JS_VERSION = '$ver';" app.js || { echo "JS_VERSION in app.js is not $ver"; exit 1; }
+          # both READMEs carry the version under their title
+          for pair in "README.md:Version" "README.ru.md:Версия"; do
+            file=${pair%%:*}; label=${pair#*:}
+            got=$(sed -n "s/^\*\*$label \([^*]*\)\*\*.*/\1/p" "$file" | head -1)
+            [ "$got" = "$ver" ] || { echo "$file says $label $got, expected $ver"; exit 1; }
+          done
+
+          # Since 5.46.0 index.html carries no version of its own: the badge is filled by
+          # app.js from JS_VERSION, so a page held by the browser cache cannot show a
+          # version that is not running. Looking for "v$ver" here would fail every release.
+          if grep -q 'id="versionBtn"[^>]*>[^<]' index.html; then
+            echo "index.html carries a static version again: the badge must stay empty"
+            exit 1
+          fi
+          if grep -Eq '\bv[0-9]+\.[0-9]+\.[0-9]+' index.html; then
+            echo "a version number found its way back into index.html"
+            exit 1
+          fi
+          grep -qF "document.getElementById('versionBtn').textContent = 'v' + JS_VERSION;" app.js \
+            || { echo "app.js does not fill the version badge"; exit 1; }
+
           node --check app.js
           php -l app.php && php -l ext.php
           python3 -c "import json; json.load(open('lang.ru.json'))"
@@ -30,11 +51,14 @@ jobs:
 
       - name: Release notes from the changelogs
         run: |
+          set -eu
           ver="${GITHUB_REF_NAME#v}"
           section() { awk -v v="## $ver" '$0 == v {f=1; next} /^## / {if (f) exit} f' "$1"; }
-          en=$(section CHANGELOG.md)
+          # "|| true" keeps set -e from swallowing the explicit messages below: a missing
+          # file or section must say what is wrong, not just exit
+          en=$(section CHANGELOG.md || true)
           [ -n "$en" ] || { echo "CHANGELOG.md has no section ## $ver"; exit 1; }
-          ru=$(section CHANGELOG.ru.md)
+          ru=$(section CHANGELOG.ru.md || true)
           {
             echo "## What's new"
             echo "$en"
@@ -44,7 +68,7 @@ jobs:
               echo "$ru"
             fi
             echo
-            echo "Install or update: see [README](https://github.com/${GITHUB_REPOSITORY}#install)."
+            echo "Install or update: [README](https://github.com/${GITHUB_REPOSITORY}#install) · [инструкция по-русски](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/README.ru.md#установка)."
           } > notes.md
           cat notes.md
 

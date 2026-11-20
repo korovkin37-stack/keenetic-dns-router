@@ -2,7 +2,19 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.46.1
+- The GitHub release build is fixed. The workflow looked for the version number inside index.html, which carries no number of its own since 5.46.0, so every release failed at the check step with "index.html still shows another version". The check is now the other way round: the badge must stay empty in the HTML, no version number may appear anywhere in it, and app.js must fill the badge from JS_VERSION.
+- The check step stops at the first failure. Before, its exit code came from the last command in the list, so a failed php -l in the middle did not stop the build: a file with a syntax error could reach the release. Verified: a damaged ext.php now fails the step.
+- The panel code is the same as in 5.46.0 apart from two tooltips and the version line. This release exists so the fixed workflow can build and publish it.
+- install.sh is in the repository and is checked on every release: `sh -n install.sh` runs unconditionally again, and the file ships as the second release asset next to dns-router.tar.gz. It is deliberately not inside the panel archive - the panel refuses files it does not know.
+- README.ru.md: the whole instruction in Russian - what the panel does, requirements, installation through install.sh (with its variables, the upgrade from 4.x and the backup path), installation by hand, nginx, the command line, updates, releasing, all 57 timeouts and limits, languages and notes. The two READMEs link to each other.
+- The Install section of README.md now describes install.sh as the usual way and app.php install as the manual one; before, it only described the latter. The nginx section says which of the two writes nginx.conf and which never touches it.
+- The version now lives in four places: README.ru.md carries it too. tools/bump_version.py, tools/make_zip.py and the release workflow check all four, so the Russian page cannot drift.
+- Written down: client_max_body_size 8m in nginx is the outer ceiling of an uploaded update, so raising the panel's own "Largest update archive" above 8 MB only helps if nginx is raised too.
+- Two tooltips of the limits card named the DNS card "DNS для разрешения доменов" while the interface calls it "DNS для резолва доменов"; they now use the real name.
+
 ## 5.46.0
+- The GitHub release of this version was not built: the workflow still looked for a version number in index.html. The panel files themselves are fine - 5.46.1 is the same panel with the fixed build.
 - Settings, Timeouts and limits: every timeout and every limit of the panel is now a setting - 57 values in eight groups (Downloads, DNS lookups, Lists, Tasks and router, Hooks, DPI check, Diagnostics and tables, Panel and security). Each field shows its unit, its allowed range and a tooltip saying what it changes; the code reads them through one registry instead of numbers written into it.
 - The defaults are exactly what the panel did before, so the update changes no behaviour until you edit a value. A value equal to the default is not stored: the database keeps only your own changes, so a later version can improve a default you never touched while your edits survive.
 - Values are checked when saved (range, whole number where it must be whole, and the two pairs that only make sense in order) and clamped again when read, so a hand-edited database cannot break the panel. The arrow next to a field, the button under a group and Reset all put the defaults back.
