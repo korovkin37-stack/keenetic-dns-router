@@ -1,7 +1,7 @@
 // app.js - клиентская логика
 
 const API = '/app.php';
-const JS_VERSION = '5.46.2'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.46.4'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -5071,6 +5071,7 @@ async function saveDnsResolver() {
         dnsGlobalLoaded = false;
         showToast(r.servers ? 'DNS saved: domains are resolved through these servers' : 'DNS reset: the system resolver is used', 'success');
         if (r.route_error) showToast(t('The routes of the DNS servers: {0}', r.route_error), 'error', 9000);
+        if (r.route_skipped) showToast(t('No route for these DNS servers (local or reserved addresses): {0}', r.route_skipped), 'error', 9000);
     } else {
         showToast(r.error || 'Failed to save', 'error', 8000);
     }

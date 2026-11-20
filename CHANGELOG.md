@@ -2,6 +2,17 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.46.4
+- License: the project is under MIT. The full text is in the new LICENSE file, both READMEs gained a License section, and NOTICE.md now separates the license of the project from the licenses of third-party material.
+- Repository: .gitignore covers every generated tests/run* folder, not only tests/run/, so the working files of the test suites cannot be committed by accident.
+
+## 5.46.3
+- Ping-check: changing the profile now removes every previous host, not only the first one. Keenetic CLI takes "no host" without an argument and clears the whole list, so one command replaces up to four hosts.
+- Update check: a failed download is reported as itself. The answer file is no longer read before the curl error is checked, so a PHP warning cannot hide the real reason (a timeout, a refused connection).
+- DNS routes: servers in the provider's CGNAT range 100.64.0.0/10 get their route through the chosen interface. Local and private addresses stay unrouted, and the servers that got no route are now named instead of being skipped silently.
+- Diagnostics: the DoH host address in the DNS test has its own variable name, so it no longer overwrites the DoH answers.
+- Tests: tests/round5.php, 58 checks over the six points above, including a synthetic QUIC Initial packet with a token of every length.
+
 ## 5.46.2
 - A tag without the leading v no longer passes in silence. Before, tags like 5.46.1 matched no trigger, so GitHub created no run at all: no error, no release, and nothing to look at. Such a tag now starts the workflow and stops with the exact instruction - create the tag vX.Y.Z on this commit, push it, delete the wrong one.
 - Everything else is as in 5.46.1: all 57 timeouts and limits in Settings, the version badge filled by app.js, install.sh and README.ru.md in the repository, screenshots in both READMEs.

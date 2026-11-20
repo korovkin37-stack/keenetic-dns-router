@@ -8,7 +8,7 @@
 таблицы политик роутера через `ip rule` / `ip route`. Всё работает на самом роутере под
 Entware: PHP + nginx, без облака и без сборки.
 
-**Версия 5.46.2** · [English](README.md) · [Изменения](CHANGELOG.ru.md) · [Changelog in English](CHANGELOG.md)
+**Версия 5.46.4** · [English](README.md) · [Изменения](CHANGELOG.ru.md) · [Changelog in English](CHANGELOG.md)
 
 ---
 
@@ -255,6 +255,7 @@ tar --no-recursion --format=gnu -czf dns-router.tar.gz \
 * [CHANGELOG.ru.md](CHANGELOG.ru.md) / [CHANGELOG.md](CHANGELOG.md) — что менялось; они же
   служат описанием релиза на GitHub.
 * [NOTICE.md](NOTICE.md) — сторонние материалы.
+* [LICENSE](LICENSE) — лицензия MIT этого проекта.
 
 ## Сторонние материалы
 
@@ -262,3 +263,14 @@ tar --no-recursion --format=gnu -czf dns-router.tar.gz \
 [Runnin4ik/dpi-detector](https://github.com/Runnin4ik/dpi-detector) (MIT); сами проверки
 написаны заново на PHP. Данные списков скачиваются с источника во время работы и в этот
 репозиторий не входят.
+
+## Лицензия
+
+[MIT](LICENSE) · Copyright (c) 2026 korovkin37-stack.
+
+Пользуйтесь, меняйте, распространяйте, в том числе продавайте — единственное условие:
+сохранять уведомление об авторстве и текст разрешения в копиях. Панель поставляется без
+каких-либо гарантий: она пишет маршруты в работающий роутер, поэтому перед первым запуском
+сохраните резервную копию конфигурации.
+
+Сторонние материалы остаются под своими лицензиями — см. [NOTICE.md](NOTICE.md).

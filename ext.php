@@ -1050,15 +1050,29 @@ function doGetDnsResolver(SQLite3 $db) {
         'route_iface' => (string)getSetting($db, 'dns_route_iface'), 'max_servers' => limit('dns_servers_max')];
 }
 
+// Why a DNS server gets no route of its own: '' = it is fine. The same refusals as for a list
+// entry, except CGNAT 100.64.0.0/10: providers hand out such addresses to their own resolvers
+// and to the far end of a tunnel, and those are exactly the servers one routes through it.
+// Local and private addresses (10/8, 192.168/16, 172.16/12, 127/8, 169.254/16) stay refused:
+// a route into a tunnel would take the router's own LAN resolver away.
+function dnsRouteReject($ip) {
+    if (!isValidIPv4($ip)) return 'invalid';
+    $oct = explode('.', $ip);
+    if ((int)$oct[0] === 100 && (int)$oct[1] >= 64 && (int)$oct[1] <= 127) return '';
+    return listsEntryReject($ip);
+}
+
 // The DNS servers of the panel through a chosen interface: a host route per server in the main table,
 // the way the BGP hook routes the bird neighbor. The router's own lookups go by the main table, Keenetic policies
 // do not apply to them. Private and local addresses are never routed away.
 function dnsRoutesSync(SQLite3 $db) {
     $iface = (string)getSetting($db, 'dns_route_iface');
     $want = [];
+    $skipped = [];
     if ($iface !== '') {
         foreach (dnsServerList((string)getSetting($db, 'dns_servers')) as $ip) {
-            if (isValidIPv4($ip) && listsEntryReject($ip) === '') $want[] = $ip;
+            if (dnsRouteReject($ip) === '') $want[] = $ip;
+            else $skipped[] = $ip;
         }
     }
     [$oldIface, $oldList] = array_pad(explode('|', (string)getSetting($db, 'dns_routes_applied'), 2), 2, '');
@@ -1068,7 +1082,7 @@ function dnsRoutesSync(SQLite3 $db) {
         if ($oldIface !== $iface || !in_array($ip, $want, true)) $lines[] = "route del $ip/32 dev $oldIface table main";
     }
     foreach ($want as $ip) $lines[] = "route replace $ip/32 dev $iface table main";
-    if (!$lines) return ['routes' => 0, 'error' => ''];
+    if (!$lines) return ['routes' => 0, 'error' => '', 'skipped' => $skipped];
     $out = (string)ipRouteBatch($lines);
     $error = '';
     // a stale route that is already gone is not an error
@@ -1076,7 +1090,7 @@ function dnsRoutesSync(SQLite3 $db) {
         if (trim($row) !== '' && !preg_match('/^Command failed|No such process/', $row)) $error = trim($row);
     }
     setSetting($db, 'dns_routes_applied', $want ? $iface . '|' . implode(' ', $want) : null);
-    return ['routes' => count($want), 'error' => $error];
+    return ['routes' => count($want), 'error' => $error, 'skipped' => $skipped];
 }
 
 function doSaveDnsResolver(SQLite3 $db, $in) {
@@ -1093,7 +1107,8 @@ function doSaveDnsResolver(SQLite3 $db, $in) {
     setSetting($db, 'dns_mode', ($in['mode'] ?? '') === 'all' ? 'all' : null);
     setSetting($db, 'dns_route_iface', $routeIface === '' ? null : $routeIface);
     $routes = dnsRoutesSync($db);
-    return ['success' => true, 'servers' => implode(' ', $list), 'routes' => $routes['routes'], 'route_error' => $routes['error']];
+    return ['success' => true, 'servers' => implode(' ', $list), 'routes' => $routes['routes'], 'route_error' => $routes['error'],
+        'route_skipped' => implode(' ', $routes['skipped'])];
 }
 
 function doGetPanelNet(SQLite3 $db) {
@@ -1468,9 +1483,11 @@ function doCheckGithubUpdate($in) {
 
     $tmp = tempnam(tempDir(), 'krgh_');
     $error = listsDownload('https://api.github.com/repos/' . GITHUB_REPO . '/releases/latest', $tmp);
-    $release = json_decode((string)file_get_contents($tmp), true);
+    // the error first: on a failure curl leaves no file, and reading it would raise a PHP
+    // warning that the panel returns as php_warnings — it would hide the real network error
+    if ($error !== '') { @unlink($tmp); return ['success' => false, 'error' => $error]; }
+    $release = json_decode((string)@file_get_contents($tmp), true);
     @unlink($tmp);
-    if ($error !== '') return ['success' => false, 'error' => $error];
     if (!is_array($release) || empty($release['tag_name'])) return ['success' => false, 'error' => 'GitHub gave no release'];
 
     $tag = (string)$release['tag_name'];
@@ -1491,7 +1508,7 @@ function doCheckGithubUpdate($in) {
         $raw = 'https://raw.githubusercontent.com/' . GITHUB_REPO . '/' . rawurlencode($tag) . '/';
         $found = $lang !== 'en' && listsDownload($raw . 'CHANGELOG.' . $lang . '.md', $tmp) === '';
         if ($found || listsDownload($raw . 'CHANGELOG.md', $tmp) === '') {
-            $parts = preg_split('/^## +(.+)$/m', (string)file_get_contents($tmp), -1, PREG_SPLIT_DELIM_CAPTURE);
+            $parts = preg_split('/^## +(.+)$/m', (string)@file_get_contents($tmp), -1, PREG_SPLIT_DELIM_CAPTURE);
             for ($i = 1; $i + 1 < count($parts) && count($notes) < 10; $i += 2) {
                 // "5.36" or "5.31–5.33": the first version in the heading decides
                 if (!preg_match('/\d+\.\d+(\.\d+)?/', $parts[$i], $m)) continue;
@@ -2775,6 +2792,7 @@ function jobRun(SQLite3 $db, $kind, array $ids) {
     if (birdReassert($db)) jobLog('bgp: the rule and the neighbor routes are in place');
     $dnsRoutes = dnsRoutesSync($db);
     if ($dnsRoutes['routes']) jobLog('dns: ' . $dnsRoutes['routes'] . ' DNS servers routed through ' . getSetting($db, 'dns_route_iface') . ($dnsRoutes['error'] !== '' ? ': ' . $dnsRoutes['error'] : ''));
+    if ($dnsRoutes['skipped']) jobLog('dns: no route for ' . implode(' ', $dnsRoutes['skipped']) . ' (local or reserved addresses)');
     jobLog('routes: ' . $applied['routes'] . ' in the tables, +' . $applied['added'] . ' new, ~' . $applied['changed'] . ' changed, -' . $applied['removed'] . ' removed, ' . $applied['unchanged'] . ' untouched'
         . ($applied['route_errors'] ? '; ' . $applied['route_errors'] . ' rejected: ' . $applied['route_error'] : ''));
     if ($applied['rule_error'] !== '') jobLog('rules: FAILED ' . $applied['rule_error']);
@@ -2958,9 +2976,11 @@ function doSetPingCheck($in) {
     $now = pingCheckOf($id);
     if ($now && !$now['ours']) fail('The interface already has the profile "' . $now['profile'] . '" set in Keenetic: remove it there first');
     $p = pingCheckProfileName($id);
-    // the same text as in the router console; "no host" clears every host of the profile
+    // the same text as in the router console. Keenetic CLI 3.107.1: "no host [ <host> ]" —
+    // without an argument it clears every host of the profile ("hosts cleared"), with one it
+    // removes only that host. So the argument is deliberately absent: one line drops all four.
     $cli = ["ping-check profile $p"];
-    if ($now && $now['hosts']) $cli[] = "ping-check profile $p no host " . $now['hosts'][0];
+    if ($now && $now['hosts']) $cli[] = "ping-check profile $p no host";
     foreach ($hosts as $host) $cli[] = "ping-check profile $p host $host";
     $cli[] = "ping-check profile $p mode $mode";
     if (in_array($mode, ['connect', 'tls'], true)) $cli[] = "ping-check profile $p port $port";
@@ -4098,11 +4118,12 @@ function dpiTestDns(array $lists) {
         $level = $spoofed ? 'block' : ($text ? 'partial' : 'ok');
         $rows[] = ['domain' => $name, 'control' => in_array($name, $lists['dns_control'], true), 'cells' => $cells, 'level' => $level, 'verdict' => $text ? implode('; ', $text) : 'Matches'];
     }
-    $doh = gethostbyname('cloudflare-dns.com');
+    // a separate name: $doh above holds the DoH answers, this is one address of the DoH host
+    $dohIp = gethostbyname('cloudflare-dns.com');
     $routes = [
         'isp'    => $isp === '' ? '' : dpiRouteDev($isp),
         'google' => dpiRouteDev('8.8.8.8'),
-        'doh'    => isValidIPv4($doh) ? dpiRouteDev($doh) : '',
+        'doh'    => isValidIPv4($dohIp) ? dpiRouteDev($dohIp) : '',
         'dot'    => dpiRouteDev('9.9.9.9'),
     ];
     return ['isp_server' => $isp, 'routes' => $routes, 'rows' => $rows];

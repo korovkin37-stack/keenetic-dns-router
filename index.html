@@ -415,7 +415,7 @@
                 <div class="dns-row dns-route">
                     <label class="check-row"><input type="checkbox" id="dnsRouteOn"> <span>Send these servers through the interface</span></label>
                     <select id="dnsRouteIface" data-empty="Choose an interface"></select>
-                    <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="A route to every server above through the chosen interface, like the route to the BGP neighbor: the panel's lookups then go through the tunnel. The route is in the main table, so devices of the network that ask these servers directly go the same way. Local and private addresses are never routed away. The routes come back after the interface reconnects.">i</span>
+                    <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="A route to every server above through the chosen interface, like the route to the BGP neighbor: the panel's lookups then go through the tunnel. The route is in the main table, so devices of the network that ask these servers directly go the same way. Local and private addresses are never routed away; the provider's CGNAT addresses (100.64.0.0/10) are. A server that got no route is named when you save. The routes come back after the interface reconnects.">i</span>
                 </div>
                 <div class="dns-results" id="dnsResult"></div>
                 <p class="card-note" id="dnsNoNslookup" hidden>nslookup not found: the system resolver is used.</p>

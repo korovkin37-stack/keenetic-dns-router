@@ -1657,7 +1657,7 @@
 "example.com\nwww.example.com\n203.0.113.0/24\n198.51.100.7\n# comments, hosts files and adblock lines are understood too": "example.com\nwww.example.com\n203.0.113.0/24\n198.51.100.7\n# комментарии, файлы hosts и строки adblock тоже понимаются",
 "Every download of the panel goes through curl and this interface: the lists and the catalog of iplist, own lists by a link, the update check and the update from GitHub. The DPI check and the curl of Test route choose their interfaces themselves. Other traffic of the router is not affected. Empty: the router's normal routing.": "Через curl и этот интерфейс идут все загрузки панели: списки и каталог iplist, свои списки по ссылке, проверка обновлений и обновление с GitHub. Проверка DPI и curl в «Тесте маршрута» выбирают интерфейсы сами. Остальной трафик роутера не затрагивается. Пусто: обычная маршрутизация роутера.",
 "Send these servers through the interface": "Отправлять эти серверы через интерфейс",
-"A route to every server above through the chosen interface, like the route to the BGP neighbor: the panel's lookups then go through the tunnel. The route is in the main table, so devices of the network that ask these servers directly go the same way. Local and private addresses are never routed away. The routes come back after the interface reconnects.": "Маршрут к каждому серверу выше через выбранный интерфейс, как маршрут до соседа BGP: запросы панели тогда идут через туннель. Маршрут в основной таблице, поэтому устройства сети, которые спрашивают эти серверы напрямую, пойдут так же. Локальные и частные адреса никуда не уводятся. После переподключения интерфейса маршруты возвращаются.",
+"A route to every server above through the chosen interface, like the route to the BGP neighbor: the panel's lookups then go through the tunnel. The route is in the main table, so devices of the network that ask these servers directly go the same way. Local and private addresses are never routed away; the provider's CGNAT addresses (100.64.0.0/10) are. A server that got no route is named when you save. The routes come back after the interface reconnects.": "Маршрут к каждому серверу выше через выбранный интерфейс, как маршрут до соседа BGP: запросы панели тогда идут через туннель. Маршрут в основной таблице, поэтому устройства сети, которые спрашивают эти серверы напрямую, пойдут так же. Локальные и частные адреса никуда не уводятся, а CGNAT-адреса провайдера (100.64.0.0/10) уводятся. Сервер, которому маршрут не добавлен, называется при сохранении. После переподключения интерфейса маршруты возвращаются.",
 "Choose the interface for the DNS servers": "Выберите интерфейс для DNS-серверов",
 "The routes of the DNS servers: {0}": "Маршруты DNS-серверов: {0}",
 "Download failed: {0} — {1}": "Загрузка не удалась: {0} — {1}",
@@ -1832,6 +1832,7 @@
 "The QUIC packet cannot be resent after the wait for the answer is already over": "Пакет QUIC нельзя переотправить позже, чем закончится ожидание ответа",
 "At most {0} DNS servers": "Не больше {0} DNS-серверов",
 "The archive is larger than {0} MB": "Архив больше {0} МБ",
-"At most {0} MB of text": "Не больше {0} МБ текста"
+"At most {0} MB of text": "Не больше {0} МБ текста",
+"No route for these DNS servers (local or reserved addresses): {0}": "Этим DNS-серверам маршрут не добавлен (локальные или зарезервированные адреса): {0}"
 }
 }

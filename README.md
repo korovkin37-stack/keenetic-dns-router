@@ -8,7 +8,7 @@ downloads IP lists from a source such as [iplist.opencck.org](https://iplist.ope
 and writes the routes into the policy tables of the router with `ip rule` / `ip route`.
 It runs on the router itself under Entware: PHP + nginx, no cloud, no build step.
 
-**Version 5.46.2** · [Changelog](CHANGELOG.md) · [Русская версия](README.ru.md) · [Изменения по-русски](CHANGELOG.ru.md)
+**Version 5.46.4** · [Changelog](CHANGELOG.md) · [Русская версия](README.ru.md) · [Изменения по-русски](CHANGELOG.ru.md)
 
 ---
 
@@ -255,6 +255,7 @@ of the code writes plain English. Russian ships with the panel.
 * [CHANGELOG.md](CHANGELOG.md) / [CHANGELOG.ru.md](CHANGELOG.ru.md) — what changed, also used
   as the release notes on GitHub.
 * [NOTICE.md](NOTICE.md) — third-party material.
+* [LICENSE](LICENSE) — the MIT license of this project.
 
 ## Third-party material
 
@@ -262,3 +263,13 @@ See [NOTICE.md](NOTICE.md). The DPI check follows the idea and the built-in list
 [Runnin4ik/dpi-detector](https://github.com/Runnin4ik/dpi-detector) (MIT); the checks
 themselves are written anew in PHP. List data is downloaded from the source at run time and
 is not part of this repository.
+
+## License
+
+[MIT](LICENSE) · Copyright (c) 2026 korovkin37-stack.
+
+Use it, change it, ship it, sell it — the only condition is to keep the copyright and the
+permission notice in copies. The panel comes with no warranty of any kind: it writes routes
+into a live router, so keep a configuration backup before the first run.
+
+Third-party material keeps its own licenses — see [NOTICE.md](NOTICE.md).
