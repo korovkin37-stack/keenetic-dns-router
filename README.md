@@ -8,7 +8,7 @@ downloads IP lists from a source such as [iplist.opencck.org](https://iplist.ope
 and writes the routes into the policy tables of the router with `ip rule` / `ip route`.
 It runs on the router itself under Entware: PHP + nginx, no cloud, no build step.
 
-**Version 5.48.0** · [Changelog](CHANGELOG.md) · [Русская версия](README.ru.md) · [Изменения по-русски](CHANGELOG.ru.md)
+**Version 5.48.1** · [Changelog](CHANGELOG.md) · [Русская версия](README.ru.md) · [Изменения по-русски](CHANGELOG.ru.md)
 
 ---
 

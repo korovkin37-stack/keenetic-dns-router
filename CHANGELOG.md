@@ -2,6 +2,10 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.48.1
+- Service / BGP: every session is now its own chip with a status LED, the neighbor address, its AS and the session state right in the line (Established shows a green LED, any other state an amber one). Previously all sessions rendered as identical "Session Established / Active" cells, and the only way to tell which neighbor was which was the tooltip on the "i" circle; with several sessions that meant hovering every cell one by one. The tooltip still carries the full details, and nothing else in the card changed.
+- Service / ndm hooks: each event hook (firewall rebuilt, interface up) now has a selector of what it refreshes when it fires - everything, only the targets or only the lists. The routes are always applied: that is why the hook fired. The choice is stored per hook (hook_scope_<id> in the settings table), is shown and changed right in the hooks list, and the dispatcher (jobStepsFor) skips the steps the scope excludes. The BGP hook has no selector: it starts/stops bird itself and never queues a panel task.
+
 ## 5.48.0
 - The top network bar now says what it is doing: a label pill under the bar names the operation in flight. A GET takes its caption from a dictionary of the panel's read actions (Loading targets…, Running DPI checks…, Checking route drift… and so on), a POST takes the caption of the button that was pressed, and a call may pass an explicit label as the third argument of apiFetch. When several requests run at once the pill shows the first one plus a counter; a request without a caption falls back to "Loading…". The button spinner, the 800 ms delay for reads and everything else about the bar are unchanged — the bar only became informative. New strings are translated in the Russian language file.
 

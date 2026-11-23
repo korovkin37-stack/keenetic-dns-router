@@ -1,5 +1,5 @@
 <?php
-const APP_VERSION = '5.48.0';
+const APP_VERSION = '5.48.1';
 // Repacked build of 5.47.0: a small edit in every file so git lists the update.
 const COOKIE_NAME = 'krdns_auth';
 
@@ -1733,8 +1733,8 @@ function birdHook() {
 const HOOK_RAN = '/tmp/dns-router-hook-';
 
 const HOOK_DEFS = [
-    'netfilter' => [BIRD_NETFILTER_HOOK, 'Firewall rebuilt', 'ndm rebuilt the firewall: ask the task manager for a refresh. It writes the routes, refreshes the domains and the lists no more often than Settings allows (Timeouts and limits, Hooks) and puts the BGP rule and the neighbor routes back.'],
-    'ifstate'   => [BIRD_IFSTATE_HOOK, 'Interface up', 'An interface came up and is connected: ask the task manager for a refresh. It writes the routes, refreshes the domains and the lists no more often than Settings allows (Timeouts and limits, Hooks) and puts the BGP rule and the neighbor routes back.'],
+    'netfilter' => [BIRD_NETFILTER_HOOK, 'Firewall rebuilt', 'ndm rebuilt the firewall: ask the task manager for a refresh. It writes the routes (always), refreshes the domains and the lists no more often than Settings allows (Timeouts and limits, Hooks) and puts the BGP rule and the neighbor routes back. What it refreshes - everything, only the targets or only the lists - is chosen per hook in the hooks list.'],
+    'ifstate'   => [BIRD_IFSTATE_HOOK, 'Interface up', 'An interface came up and is connected: ask the task manager for a refresh. It writes the routes (always), refreshes the domains and the lists no more often than Settings allows (Timeouts and limits, Hooks) and puts the BGP rule and the neighbor routes back. What it refreshes - everything, only the targets or only the lists - is chosen per hook in the hooks list.'],
     'bird'      => [BIRD_HOOK_PATH, 'BGP tunnel', 'Generated from "BGP routing hook": starts/stops bird and the BGP rule with the tunnel.'],
 ];
 

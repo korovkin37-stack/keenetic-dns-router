@@ -2,7 +2,7 @@
 // Пересборка 5.47.0: небольшая правка в каждом файле, чтобы git заметил обновление.
 
 const API = '/app.php';
-const JS_VERSION = '5.48.0'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.48.1'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -2768,6 +2768,11 @@ async function loadHooks() {
                 <span class="led ${led}"></span>
                 <div class="hook-name">${escapeHtml(h.label)} <span class="muted">(${state}${h.custom ? ', edited by hand' : ''})</span> <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="${escapeHtml(tip)}">i</span></div>
                 <span class="hook-when" title="${escapeHtml(t('Last run'))}">${escapeHtml(when)}</span>
+                ${h.scope !== null && h.scope !== undefined ? `<select class="hook-scope" data-hook-scope="${h.id}" title="${escapeHtml(t('What the hook refreshes when it fires; the routes are always applied'))}">
+                    <option value="all"${h.scope === 'all' ? ' selected' : ''}>${escapeHtml(t('Everything'))}</option>
+                    <option value="targets"${h.scope === 'targets' ? ' selected' : ''}>${escapeHtml(t('Targets only'))}</option>
+                    <option value="lists"${h.scope === 'lists' ? ' selected' : ''}>${escapeHtml(t('Lists only'))}</option>
+                </select>` : ''}
                 <label class="hook-switch" title="${escapeHtml(t('on'))}"><input type="checkbox" data-hook-toggle="${h.id}" ${h.enabled ? 'checked' : ''}></label>
                 <button class="btn btn-small" data-hook-edit="${h.id}">✎ Edit</button>
                 ${h.custom ? `<button class="btn btn-small" data-hook-reset="${h.id}" title="Back to the generated version">Reset</button>` : ''}
@@ -2839,6 +2844,8 @@ function initHooksAndLog() {
     document.getElementById('hooksList').addEventListener('change', (e) => {
         const id = e.target.dataset.hookToggle;
         if (id) hookAction({ action: 'setHookEnabled', id, enabled: e.target.checked }, e.target.checked ? 'Hook switched on' : 'Hook switched off and removed from the router');
+        const scopeId = e.target.dataset.hookScope;
+        if (scopeId) hookAction({ action: 'setHookScope', id: scopeId, scope: e.target.value }, t('The hook now refreshes: {0}', e.target.options[e.target.selectedIndex].text));
     });
     document.getElementById('hooksList').addEventListener('click', (e) => {
         const btn = e.target.closest('button');
@@ -2922,10 +2929,22 @@ function renderBirdStats(s, running) {
     const c = s.config || {};
 
     if (sess.length) {
+        // 5.48.1: каждая сессия — свой чип с LED, соседом, AS и состоянием.
+        // Раньше все сессии выглядели как одинаковые ячейки «Session Established /
+        // Active», и без наведения на «i» было непонятно, кто есть кто.
         sess.forEach(x => {
             const up = x.state === 'Established';
             const who = [x.neighbor, x.as ? 'AS ' + x.as : ''].filter(Boolean).join(' · ');
-            cells.push(cell('Session', x.state || '-', who + (!up && x.error ? ' · ' + x.error : ''), up ? 'ok' : 'warn'));
+            const sub = who + (!up && x.error ? ' · ' + x.error : '');
+            cells.push(
+                `<span class="bgp-sess">` +
+                `<span class="led ${up ? 'led-green' : 'led-amber'}" data-notr></span>` +
+                `<b data-notr>${escapeHtml(x.neighbor || '-')}</b>` +
+                (x.as ? `<span class="bgp-sess-as" data-notr>AS ${escapeHtml(String(x.as))}</span>` : '') +
+                `<span class="bgp-sess-state ${up ? 'ok' : 'warn'}" data-notr>${escapeHtml(x.state || '-')}</span>` +
+                (sub ? `<span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="${escapeHtml(sub)}">i</span>` : '') +
+                `</span>`
+            );
         });
     } else if (!s.client) {
         cells.push(cell('Session', '-', t('no bird client: opkg install bird1cl-ipv4'), 'muted'));

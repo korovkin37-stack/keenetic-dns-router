@@ -1274,9 +1274,16 @@ function doGetHooks(SQLite3 $db) {
         $custom = (string)getSetting($db, "hook_custom_$id");
         $effective = $custom !== '' ? $custom : $default;
         $disk = execPipelineAsRoot('cat ' . escapeshellarg($path) . ' 2>/dev/null');
+        // 5.48.1: per-hook choice of what it refreshes (event hooks only; the bird hook
+        // starts/stops bird itself and never queues a panel task, so no scope for it).
+        $scope = null;
+        if ($id !== 'bird') {
+            $scope = (string)(getSetting($db, 'hook_scope_' . $id) ?: 'all');
+            if (!in_array($scope, ['all', 'targets', 'lists'], true)) $scope = 'all';
+        }
         $out[] = [
             'id' => $id, 'label' => $label, 'description' => $desc, 'path' => $path,
-            'enabled' => $enabled, 'custom' => $custom !== '',
+            'enabled' => $enabled, 'custom' => $custom !== '', 'scope' => $scope,
             'available' => $effective !== null,
             'installed' => $enabled && $effective !== null && $disk === $effective,
             'exists' => $disk !== '',
@@ -1296,6 +1303,15 @@ function doGetHookContent(SQLite3 $db, $id) {
 function doSetHookEnabled(SQLite3 $db, $id, $enabled) {
     setSetting($db, "hook_off_$id", $enabled ? null : '1');
     return hooksInstall();
+}
+
+// 5.48.1: what the hook refreshes when it fires: everything, only the targets or only the lists.
+// The routes are always applied. The bird hook never queues a panel task, so it has no scope.
+function doSetHookScope(SQLite3 $db, $id, $scope) {
+    if ($id !== 'netfilter' && $id !== 'ifstate') return ['success' => false, 'error' => 'This hook has no scope: ' . $id];
+    if (!in_array($scope, ['all', 'targets', 'lists'], true)) return ['success' => false, 'error' => 'Unknown scope: ' . $scope];
+    setSetting($db, "hook_scope_$id", $scope === 'all' ? null : $scope);
+    return ['success' => true, 'scope' => $scope];
 }
 
 function doSaveHookContent(SQLite3 $db, $id, $content) {
@@ -2616,13 +2632,24 @@ function jobStepsFor(SQLite3 $db, $kind, array $params = []) {
     }
     if ($kind !== 'event') return JOB_STEPS[$kind];
     $steps = [];
+    // 5.48.1: what the hook refreshes is chosen per hook in the hooks list: everything,
+    // only the targets or only the lists. The routes are always applied - that is why
+    // the hook fired. scope ''/'all' keeps the old behaviour.
+    $scope = 'all';
+    $ev0 = (string)($params['events'][0][0] ?? '');
+    if ($ev0 !== '' && in_array($ev0, ['netfilter', 'ifstate'], true)) {
+        $scope = (string)(getSetting($db, 'hook_scope_' . $ev0) ?: 'all');
+        if (!in_array($scope, ['targets', 'lists'], true)) $scope = 'all';
+    }
     // how often the hooks may refresh: Settings, Timeouts and limits, Hooks (0: every time).
     // limit() gives a whole number of minutes, so nothing user-supplied reaches the query.
     $targetsMin = limit('hook_targets_min');
     $listsMin = limit('hook_lists_min');
-    $targetsDue = $db->querySingle("SELECT COUNT(*) FROM domains WHERE enabled = 1") > 0
+    $targetsDue = $scope !== 'lists'
+        && $db->querySingle("SELECT COUNT(*) FROM domains WHERE enabled = 1") > 0
         && !$db->querySingle("SELECT COUNT(*) FROM domains WHERE enabled = 1 AND last_check > datetime('now', '-$targetsMin minutes')");
-    $listsDue = $db->querySingle("SELECT COUNT(*) FROM lists WHERE enabled = 1 AND (last_sync IS NULL OR last_sync = '' OR last_sync < datetime('now', '-$listsMin minutes'))") > 0;
+    $listsDue = $scope !== 'targets'
+        && $db->querySingle("SELECT COUNT(*) FROM lists WHERE enabled = 1 AND (last_sync IS NULL OR last_sync = '' OR last_sync < datetime('now', '-$listsMin minutes'))") > 0;
     if ($targetsDue) $steps[] = 'targets';
     if ($listsDue) $steps[] = 'lists';
     $steps[] = 'apply';
@@ -4930,6 +4957,7 @@ return [
     'getHooks'            => fn() => withDb('doGetHooks'),
     'getHookContent'      => fn($in) => withDb(fn($db) => doGetHookContent($db, hookId($in))),
     'setHookEnabled'      => fn($in) => withDb(fn($db) => doSetHookEnabled($db, hookId($in), !empty($in['enabled']))),
+    'setHookScope'        => fn($in) => withDb(fn($db) => doSetHookScope($db, hookId($in), (string)($in['scope'] ?? ''))),
     'saveHook'            => fn($in) => withDb(fn($db) => doSaveHookContent($db, hookId($in), (string)($in['content'] ?? ''))),
     'resetHook'           => fn($in) => withDb(fn($db) => doResetHook($db, hookId($in))),
     'getBirdLog'          => fn($in) => doGetBirdLog($in['lines'] ?? 300),
