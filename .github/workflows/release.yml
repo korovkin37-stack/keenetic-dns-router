@@ -1,3 +1,4 @@
+# Repacked build of 5.47.0: a small edit in every file so git lists the update.
 name: release
 
 on:
@@ -54,6 +55,12 @@ jobs:
           php -l app.php && php -l ext.php
           python3 -c "import json; json.load(open('lang.ru.json'))"
           sh -n install.sh
+
+          # A single CR is enough to break install.sh on the router and the shell steps of
+          # this workflow. .gitattributes keeps LF; this catches a file that slipped through
+          # anyway, before a release is built from it.
+          crlf=$(grep -rlI --exclude-dir=.git -e "$(printf '\r')" . || true)
+          [ -z "$crlf" ] || { echo "CRLF line endings in: $crlf — see .gitattributes"; exit 1; }
 
       - name: Pack
         run: tar czf dns-router.tar.gz app.php ext.php index.html app.js style.css lang.ru.json

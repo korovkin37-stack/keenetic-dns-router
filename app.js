@@ -1,7 +1,8 @@
 // app.js - клиентская логика
+// Пересборка 5.47.0: небольшая правка в каждом файле, чтобы git заметил обновление.
 
 const API = '/app.php';
-const JS_VERSION = '5.46.4'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.47.0'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -4568,7 +4569,11 @@ function renderInterfaces(filterText = '') {
     const upCount = interfacesData.filter(isUp).length;
     document.getElementById('ifActive').textContent = upCount;
     document.getElementById('ifAll').textContent = interfacesData.length;
-    document.getElementById('interfacesSummary').textContent = t('Tunnels first');
+    // туннель без "выхода в интернет" поднят, но трафик через него не идёт: это видно сразу
+    const noNat = interfacesData.filter(i => IF_TUNNEL_TYPES.includes(i.type) && i.nat_capable && !i.nat);
+    document.getElementById('interfacesSummary').textContent = noNat.length
+        ? t('Tunnels first') + ' · ' + t('tunnels without NAT: {0}', noNat.length)
+        : t('Tunnels first');
 
     const list = interfacesData.filter(i => {
         if (interfaceFilter === 'active' && !isUp(i)) return false;
@@ -4590,6 +4595,8 @@ function renderInterfaces(filterText = '') {
         const kind = IF_TUNNEL_TYPES.includes(i.type) ? 'tunnel' : (/^Wifi|AccessPoint|Station/i.test(i.type) ? 'wifi' : 'wired');
         const tags = [`<span class="if-tag" data-notr>${escapeHtml(i.type)}</span>`];
         if (i.defaultgw) tags.push('<span class="if-tag if-tag-gw">Default gateway</span>');
+        if (i.nat) tags.push(`<span class="if-tag if-tag-nat" title="${escapeHtml(t('NAT is on: the interface is used for internet access'))}">NAT on</span>`);
+        else if (i.nat_capable) tags.push(`<span class="if-tag if-tag-nonat" title="${escapeHtml(t('NAT is off: traffic from the network does not go through this interface'))}">NAT off</span>`);
         if (birdTunnelId && (i.id === birdTunnelId || i.name === birdTunnelId)) tags.push('<span class="if-tag if-tag-bgp">BGP tunnel</span>');
         return `<article class="if-card${isUp(i) ? '' : ' is-down'}" tabindex="0" role="button" data-click="ifaceDetail" data-id="${escapeHtml(i.id)}">
             <div class="if-top">
@@ -4619,6 +4626,12 @@ function formatTimeAgo(seconds) {
 // колонкам таблицы - теперь только тут, в одном месте.
 function buildInterfaceFacts(iface) {
     const parts = [];
+    if (iface.nat_capable) {
+        const nat = iface.nat
+            ? t('NAT is on') + ' · ' + (iface.nat_priority != null ? t('global priority {0}', iface.nat_priority) : t('global priority: automatic'))
+            : t('NAT is off: the interface is not used for internet access');
+        parts.push(`<div class="route-line-item">${escapeHtml(nat)}</div>`);
+    }
     if (iface.priority != null) {
         parts.push(`<div class="route-line-item">WAN priority: ${iface.priority}${iface.defaultgw ? ' <span class="chip">current default gateway</span>' : ''}</div>`);
     }
@@ -6582,7 +6595,7 @@ document.getElementById('savePrefsBtn').addEventListener('click', async () => {
 // ---------- the router's own configuration: static routes and interface state ----------
 function showRciResult(r, title) {
     document.getElementById('rciTitle').textContent = t(title);
-    document.getElementById('rciNote').textContent = r.dry_run ? t('Preview only: nothing was sent to the router.') : t(r.error || '');
+    document.getElementById('rciNote').textContent = r.dry_run ? t('Preview only: nothing was sent to the router.') : (r.note || t(r.error || ''));
     document.getElementById('rciSent').textContent = JSON.stringify(r.sent, null, 2);
     document.getElementById('rciReply').textContent = r.reply || '';
     document.getElementById('rciReplyHead').hidden = !r.reply;
@@ -6601,6 +6614,27 @@ async function rciCall(payload, title, dryRunId = 'rciDryRun') {
 
 document.getElementById('rciClose').addEventListener('click', () => { document.getElementById('rciModal').style.display = 'none'; });
 
+// Почему настроенный маршрут не в таблице. Причина приходит с сервера, здесь — wording.
+const STATIC_REASON = {
+    no_iface: ['The interface is gone', 'The route names an interface that Keenetic no longer has. Edit the route and pick an existing one.'],
+    iface_down: ['The interface is down', 'The route names an interface that is turned off or not connected. Keenetic writes the route when the interface comes up.'],
+    gw_wait: ['Waiting for the gateway', 'The route is marked "auto": Keenetic applies it when the gateway becomes available. No live route uses this gateway now.'],
+    absent: ['Not in the table', 'Keenetic keeps the route in its configuration but has not written it into the table. With "auto" it waits for the gateway; a route to the same address with a higher priority may also win. Press "?" to see where the traffic goes now.'],
+};
+
+function staticStatusCell(x) {
+    if (x.active) {
+        return `<span class="status-pill"><span class="led led-green"></span><span class="status-label">${escapeHtml(t('Active'))}</span></span>`;
+    }
+    const [label, hint] = STATIC_REASON[x.reason] || STATIC_REASON.absent;
+    const extra = x.reject ? ' ' + t('"reject" is set: while the interface is down the traffic is dropped, not sent around.') : '';
+    return `<span class="status-pill" title="${escapeHtml(t(hint) + extra)}"><span class="led led-amber"></span><span class="status-label">${escapeHtml(t(label))}</span></span>`
+        + `<button type="button" class="icon-btn icon-btn-small" data-static-why="${escapeHtml(x.dest)}" title="${escapeHtml(t('Why is it not in the table?'))}">?</button>`;
+}
+
+let staticRoutesData = [];
+let staticEditDest = '';   // '' = добавление, иначе адрес правимого маршрута
+
 async function loadStaticRoutes() {
     const body = document.getElementById('staticList');
     try {
@@ -6613,17 +6647,21 @@ async function loadStaticRoutes() {
             body.innerHTML = `<tr><td colspan="6" class="loading">${escapeHtml(t('No static routes'))}</td></tr>`;
             return;
         }
+        staticRoutesData = r.routes;
         body.innerHTML = r.routes.map(x => {
-            const status = x.active
-                ? `<span class="status-pill"><span class="led led-green"></span><span class="status-label">${escapeHtml(t('Active'))}</span></span>`
-                : `<span class="status-pill"><span class="led led-amber"></span><span class="status-label">${escapeHtml(t(x.auto ? 'Waiting for the interface' : 'Not in the table'))}</span></span>`;
+            const flags = [];
+            if (x.auto) flags.push(`<span class="chip" title="${escapeHtml(t('auto: the route is applied when the gateway becomes available'))}">auto</span>`);
+            if (x.reject) flags.push(`<span class="chip" title="${escapeHtml(t('reject: only the named interface is used, the traffic is not sent around it'))}">reject</span>`);
+            // интерфейс в конфиге может быть не задан: тогда показываем тот, что выбрал роутер
+            const iface = x.interface || x.live_interface;
+            const ifaceCell = escapeHtml(iface) + (x.interface ? '' : (iface ? ` <span class="muted" title="${escapeHtml(t('Chosen by the router, not set in the route'))}">*</span>` : ''));
             return `<tr class="domain-row">
-                <td data-label="Network" class="cell-mono">${escapeHtml(x.dest)}</td>
-                <td data-label="Gateway" class="cell-mono">${escapeHtml(x.gateway) || '<span class="muted">—</span>'}</td>
-                <td data-label="Interface" class="cell-mono">${escapeHtml(x.interface) || '<span class="muted">—</span>'}</td>
+                <td data-label="Network" class="cell-mono">${escapeHtml(x.dest)}${flags.length ? ' ' + flags.join(' ') : ''}</td>
+                <td data-label="Gateway" class="cell-mono">${escapeHtml(x.gateway || x.live_gateway) || '<span class="muted">—</span>'}</td>
+                <td data-label="Interface" class="cell-mono">${ifaceCell || '<span class="muted">—</span>'}</td>
                 <td data-label="Comment" class="cell-mono">${escapeHtml(x.comment) || '<span class="muted">—</span>'}</td>
-                <td data-label="Status">${status}</td>
-                <td data-label="Actions" class="col-actions col-sticky-right"><button type="button" class="icon-btn icon-btn-danger" data-static-del="${escapeHtml(x.dest)}" title="${escapeHtml(t('Delete'))}">✕</button></td>
+                <td data-label="Status">${staticStatusCell(x)}</td>
+                <td data-label="Actions" class="col-actions col-sticky-right"><button type="button" class="icon-btn" data-static-edit="${escapeHtml(x.dest)}" title="${escapeHtml(t('Edit'))}">✎</button><button type="button" class="icon-btn icon-btn-danger" data-static-del="${escapeHtml(x.dest)}" title="${escapeHtml(t('Delete'))}">✕</button></td>
             </tr>`;
         }).join('');
     } catch (error) {
@@ -6638,15 +6676,31 @@ function fillStaticInterface() {
 }
 
 document.getElementById('staticRefreshBtn').addEventListener('click', loadStaticRoutes);
-document.getElementById('staticAddBtn').addEventListener('click', () => {
+function openStaticModal(route) {
     fillStaticInterface();
-    document.getElementById('staticRouteNames').value = '';
-    document.getElementById('staticRouteGateway').value = '';
-    document.getElementById('staticRouteComment').value = '';
+    staticEditDest = route ? route.dest : '';
+    document.getElementById('staticRouteTitle').textContent = t(route ? 'Edit the route' : 'Add routes');
+    document.getElementById('staticRouteSave').textContent = t(route ? 'Save the route' : 'Add routes');
+    const names = document.getElementById('staticRouteNames');
+    names.value = route ? route.dest : '';
+    names.rows = route ? 2 : 5;
+    document.getElementById('staticRouteGateway').value = route ? route.gateway : '';
+    document.getElementById('staticRouteComment').value = route ? route.comment : '';
+    document.getElementById('staticRouteAuto').checked = route ? route.auto : true;
+    document.getElementById('staticRouteReject').checked = route ? route.reject : false;
+    const sel = document.getElementById('staticRouteInterface');
+    sel.value = route ? route.interface : '';
+    // интерфейс мог исчезнуть из Keenetic: показываем его как есть, а не подставляем пустоту
+    if (route && route.interface && sel.value !== route.interface) {
+        sel.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(route.interface)}">${escapeHtml(route.interface + ' — ' + t('no longer on the router'))}</option>`);
+        sel.value = route.interface;
+    }
     document.getElementById('staticRouteMsg').textContent = '';
     document.getElementById('staticRouteDry').checked = document.getElementById('rciDryRun').checked;
     document.getElementById('staticRouteModal').style.display = 'block';
-});
+}
+
+document.getElementById('staticAddBtn').addEventListener('click', () => openStaticModal(null));
 document.getElementById('staticRouteDry').addEventListener('change', (e) => { document.getElementById('rciDryRun').checked = e.target.checked; });
 document.getElementById('staticRouteClose').addEventListener('click', () => { document.getElementById('staticRouteModal').style.display = 'none'; });
 document.getElementById('staticRouteSave').addEventListener('click', async () => {
@@ -6654,19 +6708,60 @@ document.getElementById('staticRouteSave').addEventListener('click', async () =>
     const msg = document.getElementById('staticRouteMsg');
     const iface = document.getElementById('staticRouteInterface').value;
     const gateway = document.getElementById('staticRouteGateway').value.trim();
+    const auto = document.getElementById('staticRouteAuto').checked;
+    const reject = document.getElementById('staticRouteReject').checked;
+    const comment = document.getElementById('staticRouteComment').value;
     if (!routes.length) { msg.textContent = t('Enter at least one address or network'); return; }
+    if (staticEditDest && routes.length !== 1) { msg.textContent = t('One route at a time when editing'); return; }
     if (!iface && !gateway) { msg.textContent = t('Set an interface or a gateway: a route needs an exit'); return; }
+    if (reject && !auto) { msg.textContent = t('The "reject" option works only together with "auto"'); return; }
+    if (reject && !iface) { msg.textContent = t('The "reject" option needs an interface: it pins the traffic to that interface'); return; }
     msg.textContent = '';
     const wide = routes.filter(r => /\/[0-7]$/.test(r));
     if (wide.length && !confirm(t('{0} covers a large part of the Internet (0.0.0.0/0 is all of it). Add anyway?', wide.join(', ')))) return;
-    const r = await rciCall({ action: 'addStaticRoutes', routes, wide: wide.length > 0, interface: iface, gateway, comment: document.getElementById('staticRouteComment').value, auto: document.getElementById('staticRouteAuto').checked }, 'Add routes');
+    const payload = staticEditDest
+        ? { action: 'editStaticRoute', dest: staticEditDest, new_dest: routes[0], wide: wide.length > 0, interface: iface, gateway, comment, auto, reject }
+        : { action: 'addStaticRoutes', routes, wide: wide.length > 0, interface: iface, gateway, comment, auto, reject };
+    const r = await rciCall(payload, staticEditDest ? 'Edit the route' : 'Add routes');
     if (r.error) { msg.textContent = t(r.error); return; }
     if (r.dry_run) return;
     document.getElementById('staticRouteModal').style.display = 'none';
-    showToast(t('Routes added: {0}', routes.length), 'success');
+    showToast(staticEditDest ? t('Route changed') : t('Routes added: {0}', routes.length), 'success');
     loadStaticRoutes();
 });
+// Что роутер говорит про один маршрут: где трафик сейчас и что мешает маршруту лечь в таблицу
+async function explainStaticRoute(dest) {
+    const r = await api({ action: 'explainStaticRoute', dest });
+    if (r.error) { showToast(t(r.error), 'error', 8000); return; }
+    const f = r.facts;
+    const lines = [];
+    lines.push(f.dev
+        ? t('Right now the kernel sends this address through {0}{1}', f.dev, f.via ? ' via ' + f.via : '')
+        : t('The kernel gave no route for this address: {0}', f.kernel || '—'));
+    if (f.interface) {
+        lines.push(t('The route names {0}: {1}', f.interface, f.iface_state === 'up' ? t('it is up') : t('it is down or not connected')));
+        if (!f.iface_nat) lines.push(t('That interface has no NAT (ip global): Keenetic does not use it as an exit for the network'));
+    }
+    if (f.auto) lines.push(t('"auto": the route is applied when the gateway becomes available'));
+    if (f.reject) lines.push(t('"reject": while the named interface is down the traffic is dropped, not sent around'));
+    if (f.cover && f.cover.length) {
+        lines.push(t('Live routes that cover this address: {0}', f.cover.map(c => c.dest + (c.interface ? ' → ' + c.interface : '')).join(', ')));
+        lines.push(t('With ip global set on an interface, a route to the same address with a higher priority wins'));
+    }
+    const facts = Object.assign({}, f);
+    delete facts.kernel;
+    showRciResult({ note: lines.join('\n'), sent: facts, reply: f.kernel }, 'Why the route is not in the table');
+}
+
 document.getElementById('staticList').addEventListener('click', async (e) => {
+    const edit = e.target.closest('button[data-static-edit]');
+    if (edit) {
+        const route = staticRoutesData.find(x => x.dest === edit.dataset.staticEdit);
+        if (route) openStaticModal(route);
+        return;
+    }
+    const why = e.target.closest('button[data-static-why]');
+    if (why) { await explainStaticRoute(why.dataset.staticWhy); return; }
     const b = e.target.closest('button[data-static-del]');
     if (!b) return;
     const dest = b.dataset.staticDel;
@@ -6685,7 +6780,31 @@ function renderInterfaceControl(iface) {
     document.getElementById('ifStateText').textContent = t(up ? 'The interface is turned on' : 'The interface is turned off');
     document.getElementById('ifToggleBtn').textContent = t(up ? 'Turn off' : 'Turn on');
     document.getElementById('ifDescInput').value = iface.description || '';
+    const natRow = document.getElementById('ifNatRow');
+    natRow.hidden = !iface.nat_capable;
+    if (iface.nat_capable) {
+        document.getElementById('ifNatText').textContent = iface.nat
+            ? t('NAT is on') + (iface.nat_priority != null ? ' · ' + t('global priority {0}', iface.nat_priority) : '')
+            : t('NAT is off: the interface is not used for internet access');
+        document.getElementById('ifNatBtn').textContent = t(iface.nat ? 'Turn off NAT' : 'Turn on NAT');
+    }
 }
+
+document.getElementById('ifNatBtn').addEventListener('click', async () => {
+    const iface = interfacesData.find(i => i.id === currentInterfaceId);
+    if (!iface) return;
+    const on = !iface.nat;
+    const globals = interfacesData.filter(i => i.nat).length;
+    const critical = iface.nat && (iface.defaultgw || globals <= 1);
+    if (!on && critical && !confirm(t('{0} carries the internet. Without NAT the network loses access through it. Turn off?', iface.name))) return;
+    if (on && !confirm(t('Turn on NAT on {0}? Keenetic sets the priority automatically; a fixed priority is set in its own web interface.', iface.name))) return;
+    const r = await rciCall({ action: 'setInterfaceNat', id: iface.id, on, force: !on && critical }, on ? 'Turn on NAT' : 'Turn off NAT');
+    if (r.error || r.dry_run) return;
+    showToast(t(on ? 'NAT turned on' : 'NAT turned off'), 'success');
+    await loadInterfaces();
+    const fresh = interfacesData.find(i => i.id === currentInterfaceId);
+    if (fresh) renderInterfaceControl(fresh);
+});
 
 document.getElementById('ifToggleBtn').addEventListener('click', async () => {
     const iface = interfacesData.find(i => i.id === currentInterfaceId);

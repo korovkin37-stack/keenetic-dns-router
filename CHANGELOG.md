@@ -2,6 +2,17 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.47.0
+- Interfaces: every interface now shows whether NAT is on. This is the Keenetic checkbox "Use for internet access" (the global property): without it a tunnel is up and has an address, but traffic from the network does not go through it. The card shows the global priority, the list counts tunnels without NAT, and the panel can turn NAT on and off itself. Turning it off on the current gateway or the last global interface asks for confirmation.
+- Static routes: a route can be edited, not only added and deleted. The edit writes the new route and removes the old one in two steps, so a failed removal cannot leave a duplicate. The destination, gateway, interface, comment and both flags are editable.
+- Static routes: the status now says what it waits for. "Waiting for the interface" was wrong: the auto flag waits for the gateway to become available, so the label is now "Waiting for the gateway", and a named interface that is down or gone is reported as such. A live gateway is never blamed: if another route uses it, the reason is reported as "Not in the table".
+- Static routes: a new "?" button explains one route on demand — where the kernel sends the address right now, which live routes cover it, whether the named interface is up and has NAT. The interface column shows the interface the router chose when the route does not name one.
+- Static routes: the reject flag is shown and can be set. It is validated the way Keenetic documents it: only together with auto, only with a named interface, never for the default route. The auto checkbox is labelled honestly: it waits for the gateway, not for the interface.
+- Tests: tests/round7.php, 88 checks. The fake http stream keeps every RCI read inside the sandbox.
+- Packaging: the ZIP now stores a timestamp derived from each file's content instead of one fixed date for all of them. With a single fixed date git could miss a change: it treats a file as unchanged when both its size and its timestamp match the index, and editing only the version line does not change the size. That is why app.php and both READMEs sometimes did not appear in the list of changes after copying the archive.
+- Packaging: this archive is a rebuild of the same 5.47.0. Every text file carries a one-line note, so each one differs in size as well as in timestamp and git lists all of them after the archive is copied over a clone. LICENSE and the screenshots are byte-identical to the previous build and are left untouched. README: a new "Copying a release over a local clone" section.
+- Line endings: added .gitattributes — every text file is stored and checked out with LF regardless of core.autocrlf. This removes the GitHub Desktop warning about LF being converted to CRLF on the next checkout, and it protects install.sh: with CRLF it does not run on the router at all. The release workflow now refuses to build if a CR appears in any text file.
+
 ## 5.46.4
 - License: the project is under MIT. The full text is in the new LICENSE file, both READMEs gained a License section, and NOTICE.md now separates the license of the project from the licenses of third-party material.
 - Repository: .gitignore covers every generated tests/run* folder, not only tests/run/, so the working files of the test suites cannot be committed by accident.

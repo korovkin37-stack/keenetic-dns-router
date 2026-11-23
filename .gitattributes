@@ -1,0 +1,22 @@
+# The panel runs on the router (Linux/Entware) and the release steps run on Linux.
+# LF everywhere, whatever core.autocrlf says on Windows: this file overrides it and
+# removes the GitHub Desktop warning "This file uses LF line endings, but Git is
+# configured to convert them to CRLF the next time the file is checked out".
+* text=auto eol=lf
+
+# Files that get executed: a single CR is enough to break them.
+# sh -n install.sh with CRLF: Syntax error: word unexpected (expecting "in").
+*.sh    text eol=lf
+*.php   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# Never touch binaries.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.pdf   binary
+*.gz    binary
+*.zip   binary
+*.db    binary

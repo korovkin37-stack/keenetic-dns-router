@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- Repacked build: a small edit in every file so git lists the update. No version number here. -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1322,7 +1323,7 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
     <div id="staticRouteModal" class="modal">
         <div class="modal-content target-content">
             <div class="modal-head">
-                <h2>Add routes</h2>
+                <h2 id="staticRouteTitle">Add routes</h2>
                 <button type="button" class="close" id="staticRouteClose" aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
@@ -1344,7 +1345,8 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
                     <label for="staticRouteComment">Comment:</label>
                     <input type="text" id="staticRouteComment" maxlength="60" autocomplete="off">
                 </div>
-                <label class="check-row"><input type="checkbox" id="staticRouteAuto" checked> <span>Only while the interface is up</span></label>
+                <label class="check-row"><input type="checkbox" id="staticRouteAuto" checked> <span>Apply when the gateway becomes available (auto)</span> <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="Keenetic keeps the route in its configuration and writes it into the table when the gateway becomes reachable. Until then the panel shows &quot;Waiting for the gateway&quot;. Without this flag the route is written at once and stays in the configuration even if the exit is gone.">i</span></label>
+                <label class="check-row"><input type="checkbox" id="staticRouteReject"> <span>Only through the named interface (reject)</span> <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="While the named interface is down the traffic to this network is dropped instead of going through another exit. Works only together with auto, needs a named interface, and cannot be used for the default route.">i</span></label>
                 <label class="check-row"><input type="checkbox" id="staticRouteDry"> <span>Preview only: show the request, send nothing</span></label>
             </div>
             <div class="modal-foot">
@@ -1378,6 +1380,11 @@ SNI: the name put into SNI and Host. Empty: the destination domain; for an IP, n
                 <div class="if-control-row">
                     <span id="ifStateText"></span>
                     <button class="btn btn-small" id="ifToggleBtn"></button>
+                </div>
+                <div class="if-control-row" id="ifNatRow" hidden>
+                    <span id="ifNatText"></span>
+                    <span class="info-tip" tabindex="0" role="img" aria-label="Info" data-tip="The Keenetic checkbox &quot;Use for internet access&quot;. Keenetic calls it the global property of the interface: NAT and the default route depend on it. Without it the tunnel is up and has an address, but traffic from the network does not go through it. Turning it on sets the priority automatically; a fixed priority is set in the Keenetic web interface.">i</span>
+                    <button class="btn btn-small" id="ifNatBtn"></button>
                 </div>
                 <div class="if-control-row">
                     <input type="text" id="ifDescInput" maxlength="64" placeholder="Description" autocomplete="off">

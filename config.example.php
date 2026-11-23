@@ -1,4 +1,5 @@
 <?php
+// Repacked build of 5.47.0: a small edit in every file so git lists the update.
 $db_file = '/opt/etc/dns-router/routes.db';
 $rci_host = 'http://127.0.0.1:79';
 $our_table_start = 400;

@@ -1,5 +1,6 @@
 <?php
 defined("APP_VERSION") || exit;
+// Repacked build of 5.47.0: a small edit in every file so git lists the update.
 // Optional tabs: routing tables, Test Route, DNS info, clients, interfaces, dashboard, bird4.
 // Loaded by app.php only when one of these actions is requested.
 
@@ -657,6 +658,17 @@ function doGetInterfaces() {
             $entry['ssid'] = (string)$iface['ssid'];
             $entry['encryption'] = (string)($iface['encryption'] ?? '');
         }
+
+        // "Использовать для выхода в интернет" в веб-интерфейсе Keenetic — это свойство global.
+        // От него зависят NAT и маршрут по умолчанию (справочник команд, 3.25.93 interface ip global).
+        // Без него туннель поднят, адрес есть, а трафик из сети через него не идёт.
+        $global = $iface['global'] ?? null;
+        $entry['nat'] = !empty($global);
+        $entry['nat_priority'] = is_numeric($global) ? (int)$global : null;
+        // Показать признак есть смысл только там, где ip global вообще применим (тип IP):
+        // у туннеля адреса может ещё не быть, а галка ему нужна именно сейчас.
+        $entry['nat_capable'] = $entry['nat'] || $entry['address'] !== ''
+            || preg_match('/^(Wireguard|OpenVPN|IPsec|L2TP|PPTP|SSTP|Gre|Ipip|Eoip|PPPoE|Bridge|Tunnel|Proxy|Usb|Qmi|Yota)/i', $type) === 1;
 
         // WAN-приоритет и признак "сейчас основной шлюз" - самое полезное
         // поле для multi-WAN обзора, отдельно от простого link up/down.
@@ -3010,6 +3022,28 @@ function textLength($s) {
     return count(preg_split('//u', $s, -1, PREG_SPLIT_NO_EMPTY) ?: []);
 }
 
+// NAT и выход в интернет: свойство global интерфейса. Включение ставит автоматический
+// приоритет (ip global auto) — то же, что галка "Использовать для выхода в интернет".
+// Выключение на последнем глобальном интерфейсе или на текущем шлюзе оставит сеть без
+// интернета, поэтому требует подтверждения, как и выключение самого интерфейса.
+function doSetInterfaceNat($in) {
+    $id = rciInterfaceId($in['id'] ?? '');
+    if ($id === null) fail('Invalid interface name');
+    $iface = rciInterfaceFind($id);
+    if ($iface === null) fail('Interface not found', 404);
+    $on = !empty($in['on']);
+    if (!$on && !empty($iface['global'])) {
+        $globals = 0;
+        foreach ((array)rciGet('/rci/show/interface') as $i) {
+            if (is_array($i) && !empty($i['global'])) $globals++;
+        }
+        $critical = !empty($iface['defaultgw']) || $globals <= 1;
+        if ($critical && empty($in['force'])) fail('This interface carries the internet: without NAT the network loses access. Turn it off?');
+    }
+    $line = $on ? "interface $id ip global auto" : "interface $id no ip global";
+    return rciApply([['parse' => $line]], $in);
+}
+
 function doSetInterfaceDescription($in) {
     $id = rciInterfaceId($in['id'] ?? '');
     if ($id === null) fail('Invalid interface name');
@@ -3067,32 +3101,113 @@ function staticDestination($text) {
     return ['network' => long2ip(ip2long($ip) & ip2long($mask)), 'mask' => $mask];
 }
 
+// Does the address fall into the network? Kept in bytes-free integer math: the router's
+// php may be 32-bit, and there both sides of the comparison are signed the same way.
+function ipInCidr($ip, $cidr) {
+    [$net, $len] = array_pad(explode('/', (string)$cidr, 2), 2, '32');
+    if (!isValidIPv4($ip) || !isValidIPv4($net)) return false;
+    $len = (int)$len;
+    if ($len < 0 || $len > 32) return false;
+    if ($len === 0) return true;
+    $mask = (0xFFFFFFFF << (32 - $len)) & 0xFFFFFFFF;
+    return (ip2long($ip) & $mask) === (ip2long($net) & $mask);
+}
+
+// Why a configured route is not in the table now. Only what the router itself reports:
+// the state of the named interface and whether its gateway is used by any live route.
+// 'no_iface' | 'iface_down' | 'gw_wait' | 'absent'
+function staticRouteReason(array $route, array $ifaces, array $gateways) {
+    $id = $route['interface'];
+    if ($id !== '') {
+        $iface = $ifaces[$id] ?? null;
+        if (!is_array($iface)) return 'no_iface';
+        if (($iface['state'] ?? '') !== 'up') return 'iface_down';
+    }
+    // auto: "apply the route when specified gateway becomes available" (CLI 3.62 ip route)
+    if ($route['auto'] && $route['gateway'] !== '' && !isset($gateways[$route['gateway']])) return 'gw_wait';
+    return 'absent';
+}
+
 function doGetStaticRoutes() {
     $config = rciGet('/rci/ip/route');
     if ($config === null) return ['success' => false, 'error' => 'Could not read the static routes from Keenetic RCI', 'routes' => []];
     $live = [];
+    $gateways = [];
     foreach ((array)rciGet('/rci/show/ip/route') as $r) {
-        if (is_array($r) && isset($r['destination'])) $live[(string)$r['destination']] = true;
+        if (!is_array($r) || !isset($r['destination'])) continue;
+        $live[(string)$r['destination']] = ['gateway' => (string)($r['gateway'] ?? ''), 'interface' => (string)($r['interface'] ?? '')];
+        $gw = (string)($r['gateway'] ?? '');
+        if ($gw !== '' && $gw !== '0.0.0.0') $gateways[$gw] = true;
     }
+    $ifaces = (array)rciGet('/rci/show/interface');
     $routes = [];
     foreach ($config as $r) {
         if (!is_array($r)) continue;
         if (!empty($r['host'])) $dest = $r['host'] . '/32';
         elseif (!empty($r['network'])) $dest = $r['network'] . '/' . staticMaskToPrefix($r['mask'] ?? '255.255.255.255');
         else continue;
-        $routes[] = [
+        $row = [
             'dest' => $dest, 'gateway' => (string)($r['gateway'] ?? ''), 'interface' => (string)($r['interface'] ?? ''),
             'auto' => !empty($r['auto']), 'reject' => !empty($r['reject']), 'comment' => (string)($r['comment'] ?? ''),
             'active' => isset($live[$dest]),
         ];
+        // чем маршрут реально стал в таблице: интерфейс часто задан не в конфиге, а вычислен роутером
+        $row['live_interface'] = $live[$dest]['interface'] ?? '';
+        $row['live_gateway'] = $live[$dest]['gateway'] ?? '';
+        $row['reason'] = $row['active'] ? '' : staticRouteReason($row, $ifaces, $gateways);
+        $routes[] = $row;
     }
     return ['success' => true, 'routes' => $routes];
 }
 
-function doAddStaticRoutes($in) {
-    $dests = array_values(array_filter(array_map('trim', (array)($in['routes'] ?? []))));
-    if (!$dests) fail('Enter at least one address or network');
-    if (count($dests) > 500) fail('At most 500 routes at once');
+// One route, on demand: where the kernel sends this address right now and what may keep
+// the configured route out of the table. Facts only — the wording is built in the UI.
+function doExplainStaticRoute($in) {
+    $dest = trim((string)($in['dest'] ?? ''));
+    if (!isValidIPv4Cidr($dest)) fail("Not an IPv4 address or CIDR: $dest");
+    [$ip, $len] = array_pad(explode('/', $dest, 2), 2, '32');
+
+    $raw = trim(execReadOnly(['ip', 'route', 'get', $ip]));
+    $facts = ['dest' => $dest, 'kernel' => $raw,
+        'dev' => preg_match('/\bdev\s+(\S+)/', $raw, $m) ? $m[1] : '',
+        'via' => preg_match('/\bvia\s+(\S+)/', $raw, $m) ? $m[1] : ''];
+
+    $config = (array)rciGet('/rci/ip/route');
+    $mine = null;
+    foreach ($config as $r) {
+        if (!is_array($r)) continue;
+        $d = !empty($r['host']) ? $r['host'] . '/32'
+            : (!empty($r['network']) ? $r['network'] . '/' . staticMaskToPrefix($r['mask'] ?? '255.255.255.255') : '');
+        if ($d === $dest) { $mine = $r; break; }
+    }
+    $facts['auto'] = !empty($mine['auto']);
+    $facts['reject'] = !empty($mine['reject']);
+    $facts['gateway'] = (string)($mine['gateway'] ?? '');
+    $facts['interface'] = (string)($mine['interface'] ?? '');
+
+    $iface = $facts['interface'] !== '' ? ((array)rciGet('/rci/show/interface'))[$facts['interface']] ?? null : null;
+    $facts['iface_state'] = is_array($iface) ? (string)($iface['state'] ?? '') : '';
+    $facts['iface_nat'] = is_array($iface) ? !empty($iface['global']) : false;
+    $facts['iface_priority'] = is_array($iface) && is_numeric($iface['global'] ?? null) ? (int)$iface['global'] : null;
+
+    // что живьём накрывает этот адрес: чем длиннее префикс, тем раньше он выбирается
+    $cover = [];
+    foreach ((array)rciGet('/rci/show/ip/route') as $r) {
+        if (!is_array($r) || !isset($r['destination'])) continue;
+        $d = (string)$r['destination'];
+        if (!ipInCidr($ip, $d)) continue;
+        $cover[] = ['dest' => $d, 'len' => (int)(array_pad(explode('/', $d, 2), 2, '32')[1]),
+            'gateway' => (string)($r['gateway'] ?? ''), 'interface' => (string)($r['interface'] ?? '')];
+    }
+    usort($cover, fn($a, $b) => $b['len'] <=> $a['len'] ?: strcmp($a['dest'], $b['dest']));
+    $facts['cover'] = array_slice($cover, 0, 6);
+    $facts['cover_total'] = count($cover);
+    return ['success' => true, 'facts' => $facts];
+}
+
+
+// Общие правила добавления и правки: что вообще можно записать в ip route.
+function staticRouteInputs($in) {
     $gateway = trim((string)($in['gateway'] ?? ''));
     $interface = trim((string)($in['interface'] ?? ''));
     if ($gateway !== '' && !isValidIPv4($gateway)) fail('Invalid gateway IP');
@@ -3100,17 +3215,68 @@ function doAddStaticRoutes($in) {
     if ($gateway === '' && $interface === '') fail('Set an interface or a gateway: a route needs an exit');
     $comment = trim(preg_replace('/[\x00-\x1f]/', ' ', (string)($in['comment'] ?? '')));
     if (textLength($comment) > 60) fail('At most 60 characters');
+    return ['gateway' => $gateway, 'interface' => $interface, 'comment' => $comment,
+        'auto' => !empty($in['auto']), 'reject' => !empty($in['reject'])];
+}
+
+function staticRouteBuild($dest, array $in) {
+    // reject работает только вместе с auto и только через названный интерфейс (CLI 3.62 ip route)
+    if ($in['reject'] && !$in['auto']) fail('The "reject" option works only together with "auto"');
+    if ($in['reject'] && $in['interface'] === '') fail('The "reject" option needs an interface: it pins the traffic to that interface');
+    if ($in['reject'] && $dest === '0.0.0.0/0') fail('The "reject" option cannot be used for the default route');
+    $route = staticDestination($dest);
+    if ($in['gateway'] !== '') $route['gateway'] = $in['gateway'];
+    if ($in['interface'] !== '') $route['interface'] = $in['interface'];
+    if ($in['auto']) $route['auto'] = true;
+    if ($in['reject']) $route['reject'] = true;
+    if ($in['comment'] !== '') $route['comment'] = $in['comment'];
+    return $route;
+}
+
+function doAddStaticRoutes($in) {
+    $dests = array_values(array_filter(array_map('trim', (array)($in['routes'] ?? []))));
+    if (!$dests) fail('Enter at least one address or network');
+    if (count($dests) > 500) fail('At most 500 routes at once');
+    $fields = staticRouteInputs($in);
     $commands = [];
     foreach ($dests as $dest) {
         if (preg_match('~/[0-7]$~', $dest) && empty($in['wide'])) fail("$dest covers a large part of the Internet: confirm it");
-        $route = staticDestination($dest);
-        if ($gateway !== '') $route['gateway'] = $gateway;
-        if ($interface !== '') $route['interface'] = $interface;
-        if (!empty($in['auto'])) $route['auto'] = true;
-        if ($comment !== '') $route['comment'] = $comment;
-        $commands[] = ['ip' => ['route' => $route]];
+        $commands[] = ['ip' => ['route' => staticRouteBuild($dest, $fields)]];
     }
     return rciApply($commands, $in);
+}
+
+// Правка = снять прежний маршрут и записать новый: в CLI Keenetic команды "изменить" нет.
+// Двумя шагами нарочно: если снятие не удалось, новый не пишется и двойника не остаётся.
+function doEditStaticRoute($in) {
+    $old = trim((string)($in['dest'] ?? ''));
+    if (!isValidIPv4Cidr($old)) fail("Not an IPv4 address or CIDR: $old");
+    $new = trim((string)($in['new_dest'] ?? ''));
+    if ($new === '') $new = $old;
+    if (!isValidIPv4Cidr($new)) fail("Not an IPv4 address or CIDR: $new");
+    if (preg_match('~/[0-7]$~', $new) && empty($in['wide'])) fail("$new covers a large part of the Internet: confirm it");
+    $fields = staticRouteInputs($in);
+    $route = staticRouteBuild($new, $fields);
+
+    // снимаем именно прежний: с его шлюзом или интерфейсом, если они были заданы
+    $del = ['no' => true] + staticDestination($old);
+    foreach ((array)rciGet('/rci/ip/route') as $r) {
+        if (!is_array($r)) continue;
+        $d = !empty($r['host']) ? $r['host'] . '/32'
+            : (!empty($r['network']) ? $r['network'] . '/' . staticMaskToPrefix($r['mask'] ?? '255.255.255.255') : '');
+        if ($d !== $old) continue;
+        if (!empty($r['gateway'])) $del['gateway'] = (string)$r['gateway'];
+        elseif (!empty($r['interface'])) $del['interface'] = (string)$r['interface'];
+        break;
+    }
+    if (!empty($in['dry_run'])) return rciApply([['ip' => ['route' => $del]], ['ip' => ['route' => $route]]], $in);
+
+    $gone = rciApply([['ip' => ['route' => $del]]], $in);
+    if (!$gone['success']) return $gone;
+    $added = rciApply([['ip' => ['route' => $route]]], $in);
+    $added['sent'] = array_merge((array)($gone['sent'] ?? []), (array)($added['sent'] ?? []));
+    if (!$added['success']) $added['error'] = 'The old route was removed, the new one was not written: ' . (string)$added['error'];
+    return $added;
 }
 
 function doDeleteStaticRoutes($in) {
@@ -4657,6 +4823,7 @@ return [
     'getPolicyRoutes'     => 'doGetPolicyRoutesSummary',
     'getInterfaces'       => 'doGetInterfaces',
     'setInterfaceState'   => 'doSetInterfaceState',
+    'setInterfaceNat'     => 'doSetInterfaceNat',
     'setInterfaceDescription' => 'doSetInterfaceDescription',
     'getPingCheck'        => 'doGetPingCheck',
     'getPingChecks'       => fn() => doGetPingChecks(),
@@ -4665,6 +4832,8 @@ return [
     'getStaticRoutes'     => 'doGetStaticRoutes',
     'addStaticRoutes'     => 'doAddStaticRoutes',
     'deleteStaticRoutes'  => 'doDeleteStaticRoutes',
+    'editStaticRoute'     => 'doEditStaticRoute',
+    'explainStaticRoute'  => 'doExplainStaticRoute',
     'getInterfaceStat'    => fn($in) => doGetInterfaceStat(trim((string)($in['name'] ?? ''))),
     'getClientDetail'     => fn($in) => doGetClientDetail(trim((string)($in['mac'] ?? ''))),
     'getDashboard'        => 'doGetDashboardData',

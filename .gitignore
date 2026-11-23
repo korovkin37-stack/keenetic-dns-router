@@ -20,3 +20,5 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# Repacked build of 5.47.0: a small edit in every file so git lists the update.

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Keenetic DNS Router: установка и обновление (в том числе с 4.x). Запуск: sh install.sh
 # MANUAL=1 sh install.sh: не трогать nginx, php.ini, php-fpm и пакеты (ручная настройка). WWW=/путь: каталог панели.
+# Пересборка 5.47.0: небольшая правка в каждом файле, чтобы git заметил обновление.
 PATH=/opt/sbin:/opt/bin:$PATH
 WWW_ENV=${WWW:-}
 WWW=${WWW:-/opt/share/www/dns-router}

@@ -8,7 +8,7 @@ downloads IP lists from a source such as [iplist.opencck.org](https://iplist.ope
 and writes the routes into the policy tables of the router with `ip rule` / `ip route`.
 It runs on the router itself under Entware: PHP + nginx, no cloud, no build step.
 
-**Version 5.46.4** · [Changelog](CHANGELOG.md) · [Русская версия](README.ru.md) · [Изменения по-русски](CHANGELOG.ru.md)
+**Version 5.47.0** · [Changelog](CHANGELOG.md) · [Русская версия](README.ru.md) · [Изменения по-русски](CHANGELOG.ru.md)
 
 ---
 
@@ -196,6 +196,23 @@ tar --no-recursion --format=gnu -czf dns-router.tar.gz \
 
 `--no-recursion` with an explicit file list matters: a directory entry inside the archive
 is enough for the panel to refuse it.
+
+### Copying a release over a local clone
+
+Before committing, check that git lists every changed file. Release archives used to carry
+one fixed timestamp for all files, and git treats a file as unchanged when both its size and
+its timestamp match the index — so an edit that only replaced the version digits could stay
+invisible. Archive timestamps now depend on the file content, and every file of this build
+also differs in size. If a file is still missing from the list, run
+`git update-index --really-refresh` in the repository.
+
+Line endings are fixed by [.gitattributes](.gitattributes): every text file is stored and
+checked out with LF, whatever `core.autocrlf` says on Windows. That is what removes the
+GitHub Desktop warning "This file uses LF line endings, but Git is configured to convert
+them to CRLF the next time the file is checked out". It is not cosmetics: `install.sh` with
+CRLF does not run on the router (`sh -n` reports a syntax error), and the workflow refuses to
+build a release if a CR appears in any text file. If an older clone already holds CRLF, run
+`git add --renormalize .` once and commit.
 
 ## Timeouts and limits
 

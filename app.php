@@ -1,5 +1,6 @@
 <?php
-const APP_VERSION = '5.46.2';
+const APP_VERSION = '5.47.0';
+// Repacked build of 5.47.0: a small edit in every file so git lists the update.
 const COOKIE_NAME = 'krdns_auth';
 
 if (PHP_SAPI !== 'cli') {
