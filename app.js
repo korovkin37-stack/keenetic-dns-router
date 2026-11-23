@@ -2,7 +2,7 @@
 // Пересборка 5.47.0: небольшая правка в каждом файле, чтобы git заметил обновление.
 
 const API = '/app.php';
-const JS_VERSION = '5.47.0'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.47.1'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================

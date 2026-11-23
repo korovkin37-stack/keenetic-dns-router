@@ -8,7 +8,7 @@ downloads IP lists from a source such as [iplist.opencck.org](https://iplist.ope
 and writes the routes into the policy tables of the router with `ip rule` / `ip route`.
 It runs on the router itself under Entware: PHP + nginx, no cloud, no build step.
 
-**Version 5.47.0** · [Changelog](CHANGELOG.md) · [Русская версия](README.ru.md) · [Изменения по-русски](CHANGELOG.ru.md)
+**Version 5.47.1** · [Changelog](CHANGELOG.md) · [Русская версия](README.ru.md) · [Изменения по-русски](CHANGELOG.ru.md)
 
 ---
 
@@ -171,6 +171,13 @@ version is refused. A `.tar.gz` can also be uploaded by hand.
 Only these files are ever taken from an archive: `app.php`, `ext.php`, `index.html`,
 `app.js`, `style.css` and `lang.<code>.json`. Anything else — including directory entries —
 makes the panel reject the whole archive.
+
+The archive is unpacked to a file in 64 KB chunks and every file is written straight into the
+staging folder, so checking a release costs almost no memory: a router with `memory_limit = 8M`
+in php.ini passes it, even when that limit cannot be raised at runtime. The request also takes
+its own limit from **Settings → Web request memory**, the unpacked size is capped by
+**Largest unpacked update**, and the language file is validated by a child `php-cli` so the
+dictionary is never parsed inside the web request.
 
 ### Making a release
 

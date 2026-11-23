@@ -1384,59 +1384,133 @@ function updateRemoveStage($dir) {
 }
 
 
-// The web user's PATH has no tar/gzip, so the archive is read in PHP: zlib when present, otherwise gzip with an explicit PATH.
-function updateGunzip($file) {
-    $raw = (string)file_get_contents($file);
-    if (function_exists('gzdecode')) {
-        $out = @gzdecode($raw, 20 * 1024 * 1024);
-        return $out === false ? null : $out;
+// The web user's PATH has no tar/gzip, so the archive is read in PHP: zlib when present,
+// otherwise gzip with an explicit PATH. Both ways write a file and never hold the tar in
+// memory. On a router memory_limit is often 8M, of which the panel's own code takes ~6M:
+// gzdecode grew its output buffer by doubling and asked for 2M in one go, so the update
+// died with "Allowed memory size of 8388608 bytes exhausted". Chunks of 64K cost nothing.
+// Returns '' on success, otherwise the reason.
+function updateGunzipToFile($tgz, $tar) {
+    if ((string)@file_get_contents($tgz, false, null, 0, 2) !== "\x1f\x8b") return 'not_gzip';
+    $max = limit('update_tar_max_mb') * 1024 * 1024;
+    if (function_exists('gzopen')) {
+        $in = @gzopen($tgz, 'rb');
+        $out = @fopen($tar, 'wb');
+        if (!$in || !$out) { if ($in) gzclose($in); if ($out) fclose($out); return 'write'; }
+        $total = 0;
+        while (!gzeof($in)) {
+            $chunk = gzread($in, 65536);
+            if ($chunk === false || $chunk === '') break;
+            $total += strlen($chunk);
+            if ($total > $max) { gzclose($in); fclose($out); @unlink($tar); return 'too_big'; }
+            if (fwrite($out, $chunk) === false) { gzclose($in); fclose($out); @unlink($tar); return 'write'; }
+        }
+        gzclose($in);
+        fclose($out);
+    } else {
+        // gzip writes the file itself: shell_exec would collect the whole tar in memory
+        exec('PATH=/opt/bin:/opt/sbin:/bin:/usr/bin:/sbin:/usr/sbin gzip -dc ' . escapeshellarg($tgz)
+            . ' > ' . escapeshellarg($tar) . ' 2>/dev/null', $o, $rc);
+        if ($rc !== 0) { @unlink($tar); return 'not_gzip'; }
     }
-    $out = shell_exec('PATH=/opt/bin:/opt/sbin:/bin:/usr/bin:/sbin:/usr/sbin gzip -dc ' . escapeshellarg($file) . ' 2>/dev/null');
-    return ($out === null || $out === '') ? null : $out;
+    $size = is_file($tar) ? filesize($tar) : 0;
+    if ($size <= 0) { @unlink($tar); return 'not_gzip'; }
+    if ($size > $max) { @unlink($tar); return 'too_big'; }
+    return '';
 }
 
-// Plain ustar reader: regular files with the known names only.
-function updateParseTar($data) {
-    $files = [];
-    $pos = 0;
-    $len = strlen($data);
-    while ($pos + 512 <= $len) {
-        $h = substr($data, $pos, 512);
-        if (trim($h, "\0") === '') break;
+// Plain ustar reader: regular files with the known names only. Every member is copied
+// straight into the stage folder in 64K chunks, so memory does not depend on the archive.
+function updateExtractTar($tar, $dir) {
+    $fh = @fopen($tar, 'rb');
+    if (!$fh) return ['error' => 'Cannot read the unpacked archive'];
+    $names = [];
+    while (true) {
+        $h = fread($fh, 512);
+        if ($h === false || strlen($h) < 512 || trim($h, "\0") === '') break;
         $name = rtrim(substr($h, 0, 100), "\0");
         $prefix = rtrim(substr($h, 345, 155), "\0");
         if ($prefix !== '') $name = "$prefix/$name";
         $name = preg_replace('#^\./#', '', $name);
         $type = $h[156];
-        $size = octdec(trim(substr($h, 124, 12), "\0 "));
+        $size = (int)octdec(trim(substr($h, 124, 12), "\0 "));
+        $blocks = (int)(ceil($size / 512) * 512);
         // pax extended headers (mtime and the like) carry no file: skip them, the name comes from the real header
-        if ($type === 'x' || $type === 'g') {
-            $pos += 512 + (int)(ceil($size / 512) * 512);
-            continue;
-        }
+        if ($type === 'x' || $type === 'g') { fseek($fh, $blocks, SEEK_CUR); continue; }
         if (($type !== '0' && $type !== "\0") || !updateAllowed($name)) {
+            fclose($fh);
             return ['error' => 'Unexpected item in the archive: ' . ($name === '' ? '(unnamed)' : $name) . '. Only these files are allowed: ' . implode(', ', UPDATE_FILES) . ', lang.<code>.json'];
         }
-        if ($pos + 512 + $size > $len) return ['error' => 'The archive is cut short'];
-        $files[$name] = substr($data, $pos + 512, $size);
-        $pos += 512 + (int)(ceil($size / 512) * 512);
+        $out = @fopen("$dir/$name", 'wb');
+        if (!$out) { fclose($fh); return ['error' => "Could not write $name from the archive"]; }
+        $left = $size;
+        while ($left > 0) {
+            $chunk = fread($fh, min(65536, $left));
+            if ($chunk === false || $chunk === '') { fclose($out); fclose($fh); return ['error' => 'The archive is cut short']; }
+            if (fwrite($out, $chunk) === false) { fclose($out); fclose($fh); return ['error' => "Could not write $name from the archive"]; }
+            $left -= strlen($chunk);
+        }
+        fclose($out);
+        if ($blocks > $size) fseek($fh, $blocks - $size, SEEK_CUR);
+        $names[] = $name;
     }
-    return $files ? ['files' => $files] : ['error' => 'The archive has no files'];
+    fclose($fh);
+    return $names ? ['files' => array_values(array_unique($names))] : ['error' => 'The archive has no files'];
 }
 
-// Step 1: the archive comes in as base64; nothing is installed yet.
-function doUploadUpdate($b64) {
-    $raw = base64_decode((string)$b64, true);
-    if ($raw === false) return ['success' => false, 'error' => 'The file is empty or damaged'];
-    return updateStage($raw);
-}
-
-// Unpacks and checks an archive into a temporary folder; the answer lists the files and the token for applyUpdate
-function updateStage($raw) {
+// A language file is parsed by a child php-cli: a dictionary of 1900 keys takes more memory
+// than the whole unpacking now needs, and the web process must not pay for it.
+function updateJsonValid($path) {
     global $php_cli;
-    if (strlen($raw) < 100) return ['success' => false, 'error' => 'The file is empty or damaged'];
+    $code = '$j = json_decode((string)file_get_contents($argv[1]), true);'
+        . ' echo (is_array($j) && isset($j["strings"]) && is_array($j["strings"])) ? "DNSR_JSON_OK" : "DNSR_JSON_BAD";';
+    $out = (string)shell_exec(escapeshellarg($php_cli) . ' -d memory_limit=' . escapeshellarg(limit('web_memory_mb') . 'M')
+        . ' -r ' . escapeshellarg($code) . ' ' . escapeshellarg($path) . ' 2>&1');
+    if (strpos($out, 'DNSR_JSON_OK') !== false) return true;
+    if (strpos($out, 'DNSR_JSON_BAD') !== false) return false;
+    // no usable php-cli answer (shell_exec off): parse here, the raised limit is in force
+    $j = json_decode((string)file_get_contents($path), true);
+    return is_array($j) && isset($j['strings']) && is_array($j['strings']);
+}
+
+// Step 1: the archive comes in as base64; nothing is installed yet. It is decoded in
+// chunks straight into a file: holding both the base64 and the decoded bytes was the
+// second way to run out of memory on an 8M limit.
+function doUploadUpdate($b64) {
+    $b64 = (string)$b64;
+    if (strlen($b64) < 100) return ['success' => false, 'error' => 'The file is empty or damaged'];
+    ini_set('memory_limit', limit('web_memory_mb') . 'M');
     $maxMb = limit('update_max_mb');
-    if (strlen($raw) > $maxMb * 1024 * 1024) return ['success' => false, 'error' => "The archive is larger than $maxMb MB"];
+    if (strlen($b64) > (int)ceil($maxMb * 1024 * 1024 * 4 / 3) + 1024) {
+        return ['success' => false, 'error' => "The archive is larger than $maxMb MB"];
+    }
+    $tmp = tempnam(tempDir(), 'krup_');
+    if ($tmp === false) return ['success' => false, 'error' => 'Cannot create a temporary folder'];
+    $fh = @fopen($tmp, 'wb');
+    if (!$fh) { @unlink($tmp); return ['success' => false, 'error' => 'Cannot create a temporary folder']; }
+    $len = strlen($b64);
+    for ($i = 0; $i < $len; $i += 65536) {   // 65536 is a multiple of 4: chunk edges never split a base64 quadruple
+        $raw = base64_decode(substr($b64, $i, 65536), true);
+        if ($raw === false) { fclose($fh); @unlink($tmp); return ['success' => false, 'error' => 'The file is empty or damaged']; }
+        if (fwrite($fh, $raw) === false) { fclose($fh); @unlink($tmp); return ['success' => false, 'error' => 'Cannot create a temporary folder']; }
+    }
+    fclose($fh);
+    $res = updateStageFile($tmp);
+    @unlink($tmp);
+    return $res;
+}
+
+// Unpacks and checks an archive into a temporary folder; the answer lists the files and the token for applyUpdate.
+// The archive arrives as a path, not as bytes: keeping it out of memory is the whole point.
+function updateStageFile($tgz) {
+    global $php_cli;
+    // The unpacking itself is frugal, but the request still parses the panel's own code:
+    // take the limit from Settings instead of whatever php.ini happens to say.
+    ini_set('memory_limit', limit('web_memory_mb') . 'M');
+    $maxMb = limit('update_max_mb');
+    $size = is_file($tgz) ? filesize($tgz) : 0;
+    if ($size < 100) return ['success' => false, 'error' => 'The file is empty or damaged'];
+    if ($size > $maxMb * 1024 * 1024) return ['success' => false, 'error' => "The archive is larger than $maxMb MB"];
 
     foreach (glob(tempDir() . '/dnsr_update_*') ?: [] as $old) {
         if (is_dir($old) && filemtime($old) < time() - limit('update_stage_ttl')) updateRemoveStage($old);
@@ -1444,28 +1518,34 @@ function updateStage($raw) {
     $token = bin2hex(random_bytes(8));
     $dir = updateStageDir($token);
     if (!@mkdir($dir, 0700)) return ['success' => false, 'error' => 'Cannot create a temporary folder'];
-    $tgz = $dir . '/upload.tgz';
-    file_put_contents($tgz, $raw);
-
-    $tar = updateGunzip($tgz);
-    if ($tar === null) { updateRemoveStage($dir); return ['success' => false, 'error' => 'This is not a .tar.gz archive']; }
-    $parsed = updateParseTar($tar);
-    if (isset($parsed['error'])) { updateRemoveStage($dir); return ['success' => false, 'error' => $parsed['error']]; }
-    $names = [];
-    foreach ($parsed['files'] as $name => $data) {
-        file_put_contents("$dir/$name", $data);
-        $names[] = $name;
+    $stage = $dir . '/upload.tgz';
+    if (!@rename($tgz, $stage) && !@copy($tgz, $stage)) {
+        updateRemoveStage($dir);
+        return ['success' => false, 'error' => 'Cannot create a temporary folder'];
     }
+
+    $tar = $dir . '/upload.tar';
+    $why = updateGunzipToFile($stage, $tar);
+    if ($why !== '') {
+        updateRemoveStage($dir);
+        if ($why === 'too_big') return ['success' => false, 'error' => 'The unpacked archive is larger than ' . limit('update_tar_max_mb') . ' MB'];
+        if ($why === 'write') return ['success' => false, 'error' => 'Cannot write the unpacked archive'];
+        return ['success' => false, 'error' => 'This is not a .tar.gz archive'];
+    }
+    $parsed = updateExtractTar($tar, $dir);
+    @unlink($tar);   // the unpacked tar is no longer needed: every member is already a file next to it
+    if (isset($parsed['error'])) { updateRemoveStage($dir); return ['success' => false, 'error' => $parsed['error']]; }
+    $names = $parsed['files'];
     $files = [];
-    foreach (array_unique($names) as $name) {
+    foreach ($names as $name) {
         $path = "$dir/$name";
         if (!is_file($path) || filesize($path) === 0) { updateRemoveStage($dir); return ['success' => false, 'error' => "Could not read $name from the archive"]; }
         if (substr($name, -5) === '.json') {
-            $j = json_decode((string)file_get_contents($path), true);
-            if (!is_array($j) || !isset($j['strings']) || !is_array($j['strings'])) { updateRemoveStage($dir); return ['success' => false, 'error' => "$name is not a valid language file (needs a \"strings\" object)"]; }
+            if (!updateJsonValid($path)) { updateRemoveStage($dir); return ['success' => false, 'error' => "$name is not a valid language file (needs a \"strings\" object)"]; }
         }
         if (substr($name, -4) === '.php') {
-            $lint = trim((string)shell_exec(escapeshellarg($php_cli) . ' -l ' . escapeshellarg($path) . ' 2>&1'));
+            $lint = trim((string)shell_exec(escapeshellarg($php_cli) . ' -d memory_limit=' . escapeshellarg(limit('web_memory_mb') . 'M')
+                . ' -l ' . escapeshellarg($path) . ' 2>&1'));
             if (stripos($lint, 'No syntax errors') === false) { updateRemoveStage($dir); return ['success' => false, 'error' => "PHP syntax error in $name: $lint"]; }
         }
         $cur = updateWebDir() . "/$name";
@@ -1546,13 +1626,18 @@ function doGithubDownloadUpdate() {
     if (!$check['newer']) return ['success' => false, 'error' => 'The release on GitHub is not newer than this version'];
     if ($check['asset'] === '') return ['success' => false, 'error' => 'The release has no dns-router.tar.gz'];
     if ($check['digest'] === '') return ['success' => false, 'error' => 'GitHub gave no checksum for the archive'];
+    ini_set('memory_limit', limit('web_memory_mb') . 'M');
     $tmp = tempnam(tempDir(), 'krgh_');
     $error = listsDownload($check['asset'], $tmp);
-    $raw = (string)file_get_contents($tmp);
+    if ($error !== '') { @unlink($tmp); return ['success' => false, 'error' => $error]; }
+    // hash_file reads the archive in chunks: hashing the bytes in memory cost another copy
+    if (!is_file($tmp) || !hash_equals($check['digest'], hash_file('sha256', $tmp))) {
+        @unlink($tmp);
+        return ['success' => false, 'error' => 'The archive does not match the checksum from GitHub'];
+    }
+    $res = updateStageFile($tmp);
     @unlink($tmp);
-    if ($error !== '') return ['success' => false, 'error' => $error];
-    if (!hash_equals($check['digest'], hash('sha256', $raw))) return ['success' => false, 'error' => 'The archive does not match the checksum from GitHub'];
-    return updateStage($raw);
+    return $res;
 }
 
 // Copies $src/<names> into the panel folder as root. Current files go to backup/new, which becomes backup/prev only if everything was copied.

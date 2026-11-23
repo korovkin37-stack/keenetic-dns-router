@@ -1884,6 +1884,15 @@
 "\"auto\": the route is applied when the gateway becomes available": "auto: маршрут применяется, когда шлюз становится доступен",
 "\"reject\": while the named interface is down the traffic is dropped, not sent around": "reject: пока названный интерфейс выключен, трафик отбрасывается, а не идёт в обход",
 "Live routes that cover this address: {0}": "Живые маршруты, накрывающие этот адрес: {0}",
-"With ip global set on an interface, a route to the same address with a higher priority wins": "Если на интерфейсе задан ip global, побеждает маршрут к тому же адресу с более высоким приоритетом"
+"With ip global set on an interface, a route to the same address with a higher priority wins": "Если на интерфейсе задан ip global, побеждает маршрут к тому же адресу с более высоким приоритетом",
+"Largest unpacked update": "Наибольший распакованный архив",
+"The archive is unpacked to a file in chunks; this caps the unpacked size, so a damaged archive cannot fill the disk.": "Архив распаковывается в файл кусками; это предел распакованного размера, чтобы повреждённый архив не забил диск.",
+"The unpacked archive is larger than {0} MB": "Распакованный архив больше {0} МБ",
+"Cannot write the unpacked archive": "Не удалось записать распакованный архив",
+"Cannot read the unpacked archive": "Не удалось прочитать распакованный архив",
+"Could not write {0} from the archive": "Не удалось записать {0} из архива",
+"Could not read {0} from the archive": "Не удалось прочитать {0} из архива",
+"{0} is not a valid language file (needs a \"strings\" object)": "{0} не похож на языковой файл (нужен объект «strings»)",
+"PHP syntax error in {0}: {1}": "Синтаксическая ошибка PHP в {0}: {1}"
 }
 }

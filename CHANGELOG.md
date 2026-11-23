@@ -2,6 +2,13 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.47.1
+- Panel update: checking a release no longer runs out of memory on a router with a small PHP limit. The archive is unpacked to a file in 64 KB chunks and every member is written straight into the staging folder instead of keeping the whole tar in memory: gzdecode grew its output buffer by doubling and asked for 2 MB at once, so with memory_limit 8M the check died with "Allowed memory size of 8388608 bytes exhausted (tried to allocate 2097152 bytes)". The peak of the whole check is now the panel's own code, about 6 MB, and it passes even when the limit cannot be raised at runtime.
+- Panel update: the request takes its memory limit from Settings (Web request memory) instead of whatever php.ini happens to say; the checksum of the download is computed with hash_file, an uploaded archive is decoded from base64 in chunks, and the language file is validated by a child php-cli, so the dictionary is never parsed inside the web request.
+- Settings: new Largest unpacked update (32 MB, 1-256) caps the unpacked size of an update, so a damaged archive cannot fill the disk.
+- Panel update: the messages of this path that had no Russian translation now have one - the language file check, the PHP syntax check, reading and writing a file from the archive.
+- Tests: tests/update.php, 40 checks. The main one runs the whole check in a child process under a hard memory_limit of 8M with ini_set disabled and requires it to succeed byte for byte.
+
 ## 5.47.0
 - Interfaces: every interface now shows whether NAT is on. This is the Keenetic checkbox "Use for internet access" (the global property): without it a tunnel is up and has an address, but traffic from the network does not go through it. The card shows the global priority, the list counts tunnels without NAT, and the panel can turn NAT on and off itself. Turning it off on the current gateway or the last global interface asks for confirmation.
 - Static routes: a route can be edited, not only added and deleted. The edit writes the new route and removes the old one in two steps, so a failed removal cannot leave a duplicate. The destination, gateway, interface, comment and both flags are editable.

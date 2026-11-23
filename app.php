@@ -1,7 +1,8 @@
 <?php
-const APP_VERSION = '5.46.4';
+const APP_VERSION = '5.47.1';
+// Repacked build of 5.47.0: a small edit in every file so git lists the update.
 const COOKIE_NAME = 'krdns_auth';
- 
+
 if (PHP_SAPI !== 'cli') {
     ini_set('display_errors', '0');
     error_reporting(E_ALL);
@@ -165,6 +166,7 @@ const PANEL_LIMITS = [
     'login_delay_ms'      => [500, 0, 5000, 'ms', 'panel', 'Pause after a wrong password', 'The answer to a wrong password is held back by this long, to slow down guessing.'],
     'maintenance_window'  => [120, 10, 3600, 'sec', 'panel', 'Update window', 'While the panel files are being replaced, other actions are refused for this long after the last step.'],
     'update_max_mb'       => [5, 1, 64, 'MB', 'panel', 'Largest update archive', 'A bigger archive is refused before it is unpacked.'],
+    'update_tar_max_mb'   => [32, 1, 256, 'MB', 'panel', 'Largest unpacked update', 'The archive is unpacked to a file in chunks; this caps the unpacked size, so a damaged archive cannot fill the disk.'],
     'github_cache_hours'  => [6, 0, 168, 'hrs', 'panel', 'Update check cache', 'How long the answer of GitHub about the latest release is reused. 0: ask every time.'],
     'update_stage_ttl'    => [3600, 300, 86400, 'sec', 'panel', 'Unpacked update kept', 'An unpacked update nobody has applied is removed after this long.'],
 ];
