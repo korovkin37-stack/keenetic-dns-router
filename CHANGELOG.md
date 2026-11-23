@@ -2,6 +2,9 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 5.48.0
+- The top network bar now says what it is doing: a label pill under the bar names the operation in flight. A GET takes its caption from a dictionary of the panel's read actions (Loading targets…, Running DPI checks…, Checking route drift… and so on), a POST takes the caption of the button that was pressed, and a call may pass an explicit label as the third argument of apiFetch. When several requests run at once the pill shows the first one plus a counter; a request without a caption falls back to "Loading…". The button spinner, the 800 ms delay for reads and everything else about the bar are unchanged — the bar only became informative. New strings are translated in the Russian language file.
+
 ## 5.47.1
 - Panel update: checking a release no longer runs out of memory on a router with a small PHP limit. The archive is unpacked to a file in 64 KB chunks and every member is written straight into the staging folder instead of keeping the whole tar in memory: gzdecode grew its output buffer by doubling and asked for 2 MB at once, so with memory_limit 8M the check died with "Allowed memory size of 8388608 bytes exhausted (tried to allocate 2097152 bytes)". The peak of the whole check is now the panel's own code, about 6 MB, and it passes even when the limit cannot be raised at runtime.
 - Panel update: the request takes its memory limit from Settings (Web request memory) instead of whatever php.ini happens to say; the checksum of the download is computed with hash_file, an uploaded archive is decoded from base64 in chunks, and the language file is validated by a child php-cli, so the dictionary is never parsed inside the web request.

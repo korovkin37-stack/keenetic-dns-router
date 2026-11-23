@@ -2815,6 +2815,33 @@ button.version-badge:focus-visible { outline: 2px solid var(--accent); outline-o
 #netBar.on { opacity: 1; }
 #netBar::before { content: ''; position: absolute; top: 0; bottom: 0; width: 35%; background: var(--accent); animation: netbar 1.1s ease-in-out infinite; }
 @keyframes netbar { 0% { left: -35%; } 100% { left: 100%; } }
+
+/* Подпись под сетевой полоской: какая операция сейчас в полёте.
+   Не перехватывает клики, появляется и уходит вместе с полоской. */
+.net-status {
+    position: fixed;
+    top: 7px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 5000;
+    max-width: 70vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text);
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    padding: 3px 12px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity .15s ease;
+    pointer-events: none;
+}
+.net-status.on { opacity: 1; visibility: visible; }
 button.is-busy { pointer-events: none; opacity: .8; }
 button.is-busy::before { content: ''; display: inline-block; width: 12px; height: 12px; margin-right: 7px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -2px; animation: spin .7s linear infinite; }
 button.is-busy.icon-btn, button.is-busy.btn-icon { font-size: 0; }

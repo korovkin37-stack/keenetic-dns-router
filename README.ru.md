@@ -8,7 +8,7 @@
 таблицы политик роутера через `ip rule` / `ip route`. Всё работает на самом роутере под
 Entware: PHP + nginx, без облака и без сборки.
 
-**Версия 5.47.1** · [English](README.md) · [Изменения](CHANGELOG.ru.md) · [Changelog in English](CHANGELOG.md)
+**Версия 5.48.0** · [English](README.md) · [Изменения](CHANGELOG.ru.md) · [Changelog in English](CHANGELOG.md)
 
 ---
 

@@ -2,7 +2,7 @@
 // Пересборка 5.47.0: небольшая правка в каждом файле, чтобы git заметил обновление.
 
 const API = '/app.php';
-const JS_VERSION = '5.47.1'; // must match APP_VERSION: a mismatch means the browser holds stale files
+const JS_VERSION = '5.48.0'; // must match APP_VERSION: a mismatch means the browser holds stale files
 
 
 // ============================================ I18N ============================================
@@ -195,20 +195,72 @@ async function i18nInit(langs) {
 // 401 means the session expired: back to the login form.
 // Feedback for every request to the server: the button that was pressed shows a spinner and the bar at the top
 // of the page runs while a request is in flight. Reads (GET) show the bar only when they take long.
+// Since 5.48.0 the bar has a label: the pill under it names the operation in flight
+// (explicit label, the pressed button's caption, or the action dictionary), so a moving
+// bar no longer means "something is happening" with no way to tell what.
+const NET_ACTION_LABELS = {
+    getDomains: 'Loading targets…',
+    getPolicies: 'Loading policies…',
+    getRoutingTables: 'Loading routing tables…',
+    getTableRoutes: 'Loading routes…',
+    getDpi: 'Running DPI checks…',
+    getDpiLists: 'Loading DPI lists…',
+    getLists: 'Updating lists…',
+    getListsCatalog: 'Loading the catalog…',
+    getListDetail: 'Loading the list…',
+    getClients: 'Updating clients…',
+    getClientConnections: 'Loading connections…',
+    getClientDetail: 'Loading the client…',
+    getInterfaces: 'Loading interfaces…',
+    getInterfaceStat: 'Loading interface stats…',
+    getDashboard: 'Updating the dashboard…',
+    getRouteDrift: 'Checking route drift…',
+    getFailover: 'Loading failover…',
+    getBirdStatus: 'Checking bird…',
+    getBirdLog: 'Loading the bird log…',
+    getBirdConfig: 'Loading the bird config…',
+    getBirdHook: 'Loading the bird hook…',
+    getJob: 'Loading the task…',
+    getJobHistory: 'Loading the tasks…',
+    getJobLog: 'Loading the task log…',
+    getJobSettings: 'Loading the task settings…',
+    getSystemChecks: 'Running the system checks…',
+    getHooks: 'Loading the ndm hooks…',
+    getHookContent: 'Loading the hook…',
+    getDnsResolver: 'Loading the DNS settings…',
+    getDnsInfo: 'Loading DNS…',
+    getPanelNet: 'Loading the network settings…',
+    getLimits: 'Loading the limits…',
+    getRoutePrefs: 'Loading the route preferences…',
+    getStaticRoutes: 'Loading the static routes…',
+    getPingCheck: 'Loading the ping check…',
+    getPingChecks: 'Loading the ping checks…',
+    getUpdateInfo: 'Checking for updates…',
+    checkGithubUpdate: 'Checking GitHub…',
+    exportConfig: 'Exporting the config…',
+    setupCheck: 'Checking the setup…',
+};
+
+function netActionLabel(url) {
+    const m = /[?&]action=(\w+)/.exec(url || '');
+    return (m && NET_ACTION_LABELS[m[1]]) || '';
+}
+
 let lastClicked = null;
-let netShown = 0;
+const netOps = new Map(); // token -> { label } of requests currently shown by the bar
 document.addEventListener('click', (e) => {
     lastClicked = e.target.closest('button');
     setTimeout(() => { lastClicked = null; }, 0);
 }, true);
 
-function netBegin(isAction) {
-    const token = { done: false, shown: false, timer: null };
+function netBegin(isAction, label) {
+    const token = { done: false, shown: false, timer: null, label: label || '' };
     const show = () => {
         if (token.done) return;
         token.shown = true;
-        netShown++;
+        netOps.set(token, token.label);
         document.getElementById('netBar').classList.add('on');
+        renderNetStatus();
     };
     if (isAction) show();
     else token.timer = setTimeout(show, 800);
@@ -219,18 +271,43 @@ function netEnd(token) {
     token.done = true;
     clearTimeout(token.timer);
     if (!token.shown) return;
-    netShown--;
-    if (netShown === 0) document.getElementById('netBar').classList.remove('on');
+    netOps.delete(token);
+    if (netOps.size === 0) document.getElementById('netBar').classList.remove('on');
+    renderNetStatus();
 }
 
-async function apiFetch(url, options) {
+// Подпись под полоской: одна операция — её текст, несколько — первая + счётчик.
+function renderNetStatus() {
+    const el = document.getElementById('netStatus');
+    if (!el) return;
+    if (netOps.size === 0) {
+        el.classList.remove('on');
+        return;
+    }
+    const labels = [];
+    for (const label of netOps.values()) {
+        if (label && !labels.includes(label)) labels.push(label);
+    }
+    let text;
+    if (labels.length === 0) text = t('Loading…');
+    else if (netOps.size > 1) text = t('{0} (+{1})', labels[0], netOps.size - 1);
+    else text = t(labels[0]);
+    if (el.textContent !== text) el.textContent = text;
+    el.classList.add('on');
+}
+
+async function apiFetch(url, options, label) {
     const isAction = !!(options && options.method && options.method !== 'GET');
     const button = lastClicked;
     if (button) {
         button.dataset.busy = String(Number(button.dataset.busy || 0) + 1);
         button.classList.add('is-busy');
     }
-    const token = netBegin(isAction);
+    // Подпись для полоски: явный label > текст нажатой кнопки > словарь по action=… > «Loading…».
+    let netLabel = label || '';
+    if (!netLabel && button) netLabel = (button.textContent || '').trim();
+    if (!netLabel && !isAction) netLabel = netActionLabel(url);
+    const token = netBegin(isAction, netLabel);
     try {
         const response = await fetch(url, options);
         if (response.status === 401) {
